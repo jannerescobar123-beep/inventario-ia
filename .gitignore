@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Base de datos y datos locales
+*.db
+*.sqlite3
+datos/
+!datos/.gitkeep
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+
+# Entorno y SO
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+
+# IDEs
+.idea/
+.vscode/
+*.swp

@@ -1,0 +1,237 @@
+openapi: 3.0.3
+info:
+  title: Inventario-IA API
+  version: 0.1.0
+  description: >
+    Contrato inicial acordado entre Persona A (backend) y Persona B (frontend).
+    REGLA: cualquier cambio aquí debe registrarse como ADR en el repositorio
+    inventario-ia-docs y avisarse el mismo día.
+servers:
+  - url: http://localhost:8000
+    description: Desarrollo local
+tags:
+  - name: Sistema
+  - name: Importación
+  - name: Productos
+  - name: Análisis
+  - name: Alertas
+  - name: Chat IA
+paths:
+  /health:
+    get:
+      tags: [Sistema]
+      summary: Estado del servicio
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Estado' }
+  /api/importar:
+    post:
+      tags: [Importación]
+      summary: Importa un archivo Excel (.xlsx/.xls) o CSV de ventas
+      requestBody:
+        required: true
+        content:
+          multipart/form-data:
+            schema:
+              type: object
+              required: [archivo]
+              properties:
+                archivo:
+                  type: string
+                  format: binary
+      responses:
+        '200':
+          description: Resumen de la importación
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ResumenImportacion' }
+        '400':
+          description: Formato no soportado o columnas no reconocidas
+  /api/productos:
+    get:
+      tags: [Productos]
+      summary: Lista de productos
+      responses:
+        '200':
+          description: Lista de productos
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Producto' }
+    post:
+      tags: [Productos]
+      summary: Crea un producto manualmente
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductoNuevo' }
+      responses:
+        '201':
+          description: Creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+  /api/kpis:
+    get:
+      tags: [Análisis]
+      summary: KPIs generales del negocio
+      responses:
+        '200':
+          description: KPIs
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/KPIs' }
+  /api/analisis/rotacion:
+    get:
+      tags: [Análisis]
+      summary: Rotación por producto y productos de baja rotación
+      parameters:
+        - { in: query, name: dias, schema: { type: integer, default: 90 } }
+      responses:
+        '200':
+          description: Datos de rotación (o estado "pendiente" si aún no está implementado)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RespuestaAnalisis' }
+  /api/predicciones/{producto_id}:
+    get:
+      tags: [Análisis]
+      summary: Predicción de demanda de un producto
+      parameters:
+        - { in: path, name: producto_id, required: true, schema: { type: integer } }
+        - { in: query, name: dias, schema: { type: integer, default: 7, enum: [7, 14, 30] } }
+      responses:
+        '200':
+          description: Predicción (o estado "pendiente")
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RespuestaAnalisis' }
+  /api/recomendaciones/compra:
+    get:
+      tags: [Análisis]
+      summary: Lista de compra sugerida para esta semana
+      responses:
+        '200':
+          description: Recomendaciones (o estado "pendiente")
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/RespuestaAnalisis' }
+  /api/alertas:
+    get:
+      tags: [Alertas]
+      summary: Alertas recientes (quiebres de stock, anomalías, baja rotación)
+      responses:
+        '200':
+          description: Lista de alertas
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Alerta' }
+  /api/chat:
+    post:
+      tags: [Chat IA]
+      summary: Pregunta al asistente con IA local
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ChatRequest' }
+      responses:
+        '200':
+          description: Respuesta del asistente (siempre 200; errores de conexión se informan en la respuesta)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ChatResponse' }
+components:
+  schemas:
+    Estado:
+      type: object
+      properties:
+        status: { type: string, example: 'ok' }
+        app: { type: string, example: 'inventario-ia' }
+    Producto:
+      type: object
+      properties:
+        id: { type: integer }
+        sku: { type: string, nullable: true }
+        nombre: { type: string }
+        categoria: { type: string, default: 'General' }
+        unidad: { type: string, default: 'unidad' }
+        costo: { type: number, default: 0 }
+        precio_venta: { type: number, default: 0 }
+        stock_actual: { type: number, default: 0 }
+        stock_minimo: { type: number, default: 0 }
+      required: [id, nombre]
+    ProductoNuevo:
+      type: object
+      properties:
+        sku: { type: string, nullable: true }
+        nombre: { type: string }
+        categoria: { type: string, default: 'General' }
+        unidad: { type: string, default: 'unidad' }
+        costo: { type: number, default: 0 }
+        precio_venta: { type: number, default: 0 }
+        stock_actual: { type: number, default: 0 }
+        stock_minimo: { type: number, default: 0 }
+      required: [nombre]
+    KPIs:
+      type: object
+      properties:
+        ventas_totales: { type: number }
+        num_ventas: { type: integer }
+        ticket_promedio: { type: number }
+        unidades_vendidas: { type: number }
+        num_productos: { type: integer }
+        periodo_inicio: { type: string, format: date, nullable: true }
+        periodo_fin: { type: string, format: date, nullable: true }
+    ResumenImportacion:
+      type: object
+      properties:
+        archivo: { type: string }
+        filas_ok: { type: integer }
+        filas_error: { type: integer }
+        errores:
+          type: array
+          items: { type: string }
+        importacion_id: { type: integer, nullable: true }
+        mensaje: { type: string, nullable: true }
+    Alerta:
+      type: object
+      properties:
+        id: { type: integer }
+        tipo: { type: string, example: 'riesgo_agotamiento' }
+        severidad: { type: string, enum: [critica, media, baja] }
+        producto_id: { type: integer, nullable: true }
+        mensaje: { type: string }
+        fecha: { type: string, format: date-time }
+        leida: { type: boolean }
+    Recomendacion:
+      type: object
+      properties:
+        producto: { type: string }
+        cantidad_sugerida: { type: number }
+        urgencia: { type: string, enum: [critica, media, baja] }
+        motivo: { type: string }
+    RespuestaAnalisis:
+      type: object
+      properties:
+        estado: { type: string, enum: [pendiente, ok] }
+        descripcion: { type: string }
+        datos: { type: object, nullable: true }
+    ChatRequest:
+      type: object
+      properties:
+        pregunta: { type: string }
+      required: [pregunta]
+    ChatResponse:
+      type: object
+      properties:
+        respuesta: { type: string }
+        modelo: { type: string, example: 'llama3.2:3b' }
+        conectado: { type: boolean }
