@@ -30,6 +30,8 @@ class ResumenImportacion(BaseModel):
     errores: list[str] = []
     importacion_id: Optional[int] = None
     mensaje: Optional[str] = None
+    productos_creados: int = 0
+    productos_actualizados: int = 0
 
 
 class AlertaOut(BaseModel):

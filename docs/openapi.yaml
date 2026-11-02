@@ -201,6 +201,8 @@ components:
           items: { type: string }
         importacion_id: { type: integer, nullable: true }
         mensaje: { type: string, nullable: true }
+        productos_creados: { type: integer, description: 'Productos creados desde la hoja "productos"' }
+        productos_actualizados: { type: integer, description: 'Productos actualizados desde la hoja "productos"' }
     Alerta:
       type: object
       properties:
