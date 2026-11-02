@@ -3,6 +3,8 @@
 Los análisis aún no implementados devuelven 200 con `estado: "pendiente"`
 para que el frontend pueda integrarse desde el día 1 sin errores.
 """
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -55,7 +57,7 @@ def rotacion(
 @router.get("/predicciones/{producto_id}", response_model=RespuestaAnalisis)
 def predicciones(
     producto_id: int,
-    dias: int = Query(7, enum=[7, 14, 30]),
+    dias: Literal[7, 14, 30] = 7,
     db: Session = Depends(get_db),
 ):
     try:

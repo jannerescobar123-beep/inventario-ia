@@ -4,11 +4,32 @@ Acepta variantes de nombres de columnas (fecha/date/día, producto/artículo,
 cantidad/unidades, precio/valor) y reporta errores fila por fila sin
 detener toda la carga.
 """
+import re
+from datetime import date
+
 import pandas as pd
 from sqlalchemy.orm import Session
 
 from app.models import Importacion, Producto, Venta
 from app.schemas import ResumenImportacion
+
+# Formato ISO (2026-05-07): año primero → NO se debe activar dayfirst
+_ISO_FECHA = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+
+def _parsear_fecha(valor) -> date:
+    """Interpreta fechas de Excel/CSV sin invertir día y mes.
+
+    - Celda de Excel con fecha real → llega como Timestamp/datetime, se usa tal cual.
+    - Texto ISO (2026-05-07) → parseo estándar.
+    - Texto latino (07/05/2026) → día primero (dayfirst).
+    """
+    if hasattr(valor, "date"):
+        return pd.to_datetime(valor).date()
+    texto = str(valor).strip()
+    if _ISO_FECHA.match(texto):
+        return pd.to_datetime(texto).date()
+    return pd.to_datetime(texto, dayfirst=True).date()
 
 # nombre canónico → alias aceptados (en minúsculas, sin espacios)
 ALIAS_COLUMNAS = {
@@ -53,7 +74,7 @@ def importar_dataframe(df: pd.DataFrame, db: Session, nombre_archivo: str) -> Re
     for indice, fila in df.iterrows():
         numero_fila = indice + 2  # +2 por encabezado y base 0
         try:
-            fecha = pd.to_datetime(fila[mapa["fecha"]], dayfirst=True).date()
+            fecha = _parsear_fecha(fila[mapa["fecha"]])
             nombre_producto = str(fila[mapa["producto"]]).strip()
             cantidad = float(fila[mapa["cantidad"]])
             precio = float(fila[mapa["precio"]] or 0)

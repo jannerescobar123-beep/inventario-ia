@@ -72,14 +72,13 @@ def generar() -> tuple[pd.DataFrame, pd.DataFrame]:
 
     # 3) Demanda diaria (vectorizada): 200 productos × 180 días
     dias_idx = np.arange(DIAS)
-    dia_semana = pd.Timestamp.today().normalize().to_period("D").start_time  # placeholder
     fechas = pd.date_range(end=pd.Timestamp.today().normalize(), periods=DIAS, freq="D")
-    es_fin_de_semana = (fechas.dayofweek >= 5).astype(float)  # sáb=5, dom=6
+    es_fin_de_semana = np.asarray(fechas.day_of_week >= 5, dtype=float)  # sáb=5, dom=6
 
     lam = base_diaria[:, None] * (
         1
         + amplitud_estacional[:, None] * np.sin(2 * np.pi * dias_idx[None, :] / 30 + fase_estacional[:, None])
-        + 0.25 * es_fin_de_semana.to_numpy()[None, :]
+        + 0.25 * es_fin_de_semana[None, :]
     )
     ventas = rng.poisson(np.clip(lam, 0, None))  # (N_PRODUCTOS, DIAS)
 
@@ -89,7 +88,8 @@ def generar() -> tuple[pd.DataFrame, pd.DataFrame]:
 
     df_ventas = pd.DataFrame(
         {
-            "fecha": fechas[dia_idx].strftime("%Y-%m-%d"),
+            # Fechas como datetime reales (no texto) para que Excel las lea bien
+            "fecha": fechas[dia_idx],
             "sku": [f"SKU-{i + 1:04d}" for i in producto_idx],
             "producto": [nombres[i] for i in producto_idx],
             "categoria": [categorias[i] for i in producto_idx],
@@ -111,7 +111,6 @@ def generar() -> tuple[pd.DataFrame, pd.DataFrame]:
         }
     )
 
-    _ = dia_semana  # reservado para análisis futuros
     return df_ventas, df_productos
 
 
