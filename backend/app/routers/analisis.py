@@ -3,9 +3,7 @@
 Los análisis aún no implementados devuelven 200 con `estado: "pendiente"`
 para que el frontend pueda integrarse desde el día 1 sin errores.
 """
-from typing import Literal
-
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
@@ -57,12 +55,16 @@ def rotacion(
 @router.get("/predicciones/{producto_id}", response_model=RespuestaAnalisis)
 def predicciones(
     producto_id: int,
-    dias: Literal[7, 14, 30] = 7,
+    dias: int = Query(7, ge=7, le=30),
     db: Session = Depends(get_db),
 ):
+    if dias not in (7, 14, 30):
+        raise HTTPException(status_code=400, detail="El parámetro 'dias' debe ser 7, 14 o 30")
     try:
         datos = estadistica.predecir_demanda(db, producto_id=producto_id, dias=dias)
         return RespuestaAnalisis(estado="ok", descripcion="", datos=datos)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
     except NotImplementedError:
         return RespuestaAnalisis(
             estado="pendiente",
@@ -90,4 +92,6 @@ def recomendaciones(db: Session = Depends(get_db)):
 
 @router.get("/alertas", response_model=list[AlertaOut])
 def alertas(db: Session = Depends(get_db)):
+    # Regenera las alertas automáticas con los datos actuales (RF-12/28/29)
+    estadistica.generar_alertas(db)
     return db.query(Alerta).order_by(Alerta.fecha.desc()).limit(100).all()

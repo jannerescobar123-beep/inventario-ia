@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { getAlertas, getKpis } from '../api.js'
+import { getAlertas, getKpis, getRecomendaciones } from '../api.js'
 
 const formatoMoneda = (valor) =>
   new Intl.NumberFormat('es', { style: 'currency', currency: 'USD', maximumFractionDigits: 2 }).format(valor || 0)
@@ -7,13 +7,15 @@ const formatoMoneda = (valor) =>
 export default function Dashboard() {
   const [kpis, setKpis] = useState(null)
   const [alertas, setAlertas] = useState([])
+  const [recomendaciones, setRecomendaciones] = useState(null)
   const [error, setError] = useState('')
 
   useEffect(() => {
-    Promise.all([getKpis(), getAlertas()])
-      .then(([rKpis, rAlertas]) => {
+    Promise.all([getKpis(), getAlertas(), getRecomendaciones()])
+      .then(([rKpis, rAlertas, rRecomendaciones]) => {
         setKpis(rKpis.data)
         setAlertas(rAlertas.data)
+        setRecomendaciones(rRecomendaciones.data)
       })
       .catch(() => setError('No se pudo conectar con el backend. ¿Está corriendo en :8000?'))
   }, [])
@@ -45,6 +47,30 @@ export default function Dashboard() {
           <span className="tarjeta-nombre">Período analizado</span>
         </div>
       </section>
+
+      <h2>🛒 Comprar esta semana</h2>
+      {recomendaciones && recomendaciones.estado === 'ok' && (
+        recomendaciones.productos?.length > 0 ? (
+          <>
+            <p className="texto-secundario">
+              {recomendaciones.resumen.total_items} productos sugeridos
+              ({recomendaciones.resumen.criticos} críticos) · inversión estimada:
+              <strong> {formatoMoneda(recomendaciones.resumen.costo_estimado_total)}</strong>
+            </p>
+            <ul className="lista-alertas">
+              {recomendaciones.productos.slice(0, 8).map((item) => (
+                <li key={item.producto_id} className={`alerta severidad-${item.urgencia === 'critica' ? 'critica' : item.urgencia}`}>
+                  <strong>{item.producto}</strong> — comprar <strong>{item.cantidad_sugerida} u.</strong>
+                  {' '}<span className={`badge ${item.urgencia === 'critica' ? 'peligro' : 'neutral'}`}>{item.urgencia}</span>
+                  {' '}· {item.motivo}
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : (
+          <p className="texto-secundario">Nada urgente: el inventario cubre la venta proyectada. 👍</p>
+        )
+      )}
 
       <h2>🔔 Alertas recientes</h2>
       {alertas.length === 0 ? (
