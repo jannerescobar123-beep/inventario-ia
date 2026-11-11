@@ -1,101 +1,102 @@
-# 🏪 Inventario-IA
+# Inventario-IA
 
-Software para tiendas, ferreterías y negocios de barrio (PyMEs) que **importa ventas desde Excel**, las analiza con estadística y usa **IA 100% local** para responder:
+MVP de análisis de ventas e inventario con **IA local**. Toda la intelligence artificial se
+ejecuta en la máquina del usuario con Ollama; los datos viven en un único archivo SQLite.
 
-- 🛒 ¿Qué productos debo comprar esta semana?
-- 📉 ¿Qué productos están vendiendo menos?
-- ⏳ ¿Cuáles pueden agotarse pronto?
-- 🐢 ¿Qué productos tienen una rotación muy baja?
+- **Backend:** Python + FastAPI + pandas + SQLite (archivo único, sin configuración).
+- **Frontend:** React 18 + Vite + Redux + Recharts, sistema de diseño propio en modo oscuro.
+- **IA:** Ollama con *function calling*. El modelo **no calcula**: el backend expone 5
+  herramientas deterministas sobre SQLite y el LLM solo decide cuál llamar y redacta la respuesta.
 
-> 🔒 Los datos nunca salen del negocio: todo corre offline (SQLite + Ollama).
+La documentación funcional (requisitos, ADRs, dirección visual) vive en el repositorio
+`inventario-ia-docs`: <https://github.com/jannerescobar123-beep/inventario-ia-docs>
 
-## Arquitectura
+---
 
-```
-┌─────────────────────────────────────────────────────┐
-│                  PC del negocio (offline)            │
-│                                                     │
-│  ┌──────────────┐      ┌───────────────────────┐   │
-│  │   FRONTEND   │ HTTP │        BACKEND         │   │
-│  │ React+Vite   │─────▶│  FastAPI (Python)      │   │
-│  │ Dashboard,   │      │  ├─ Importador Excel   │   │
-│  │ alertas,     │      │  ├─ Motor estadístico  │   │
-│  │ chat IA      │      │  └─ API REST           │   │
-│  └──────────────┘      └───────┬───────────────┘   │
-│                                │                    │
-│              ┌─────────────────┼──────────────┐    │
-│              ▼                 ▼              ▼    │
-│        ┌──────────┐    ┌───────────┐   ┌─────────┐ │
-│        │  SQLite  │    │  Ollama   │   │ pandas/ │ │
-│        │ (1 solo  │    │ LLM local │   │ stats   │ │
-│        │ archivo) │    │ Llama 3.2 │   │ models  │ │
-│        └──────────┘    └───────────┘   └─────────┘ │
-└─────────────────────────────────────────────────────┘
-```
+## Requisitos
 
-## Estructura del repo
+| Herramienta | Versión | Nota |
+|---|---|---|
+| Python | 3.15 (probado) | compatível con 3.11+ |
+| Node.js | 18+ (probado con v26.6.0) | para Vite 5 |
+| Ollama | 0.40.12 | con el modelo `qwen3:1.7b` descargado |
 
-```
-inventario-ia/
-├── backend/            # FastAPI + SQLAlchemy + pandas (Persona A)
-│   ├── app/
-│   │   ├── main.py         # Punto de entrada de la API
-│   │   ├── database.py     # SQLite + sesión SQLAlchemy
-│   │   ├── models.py       # Tablas: productos, ventas, alertas...
-│   │   ├── schemas.py      # Esquemas Pydantic (contrato API)
-│   │   ├── routers/        # Endpoints: productos, importar, análisis, chat
-│   │   └── services/       # importador, estadistica, llm
-│   └── scripts/
-│       └── generar_datos_prueba.py   # Crea datos/ventas_demo.xlsx
-├── frontend/           # React + Vite (Persona B)
-│   └── src/pages/      # Dashboard, Importar, Chat
-├── docs/
-│   ├── ARQUITECTURA.md # Decisiones y modelo de datos
-│   └── openapi.yaml    # ⭐ Contrato de API acordado entre ambos
-├── datos/              # Archivos Excel de prueba (no se versiona)
-├── docker-compose.yml  # (Opcional) backend + Ollama
-└── start.sh / start.bat
-```
-
-## Inicio rápido
+## Instalación
 
 ```bash
-# 1) Backend
-cd backend
-python3 -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\activate
+# Backend
 pip install -r requirements.txt
-uvicorn app.main:app --reload --port 8000
-# → API y docs interactivas en http://localhost:8000/docs
 
-# 2) Datos de prueba (otra terminal)
-python scripts/generar_datos_prueba.py
-# → crea datos/ventas_demo.xlsx (6 meses, ~200 productos, estacionalidad)
+# Frontend
+cd frontend
+npm install
+```
+
+## Arranque
+
+Son **tres procesos** y deben coexistir:
+
+```bash
+# 1) IA local
+ollama serve
+
+# 2) API (desde la raíz del proyecto)
+python -m uvicorn backend.api.main:app --port 8000 --host 127.0.0.1
 
 # 3) Frontend
 cd frontend
-npm install
 npm run dev
-# → http://localhost:5173
-
-# 4) IA local
-ollama pull llama3.2:3b
-ollama serve   # si no está corriendo ya
 ```
 
-Con Docker (opcional): `docker compose up --build`
+- Frontend: <http://localhost:5173>
+- API: <http://127.0.0.1:8000> (`/health` comprueba que responde)
 
-## Roles del equipo
+> El primer mensaje del chat tarda ~22 s (carga del modelo en RAM). Los siguientes: 8–11 s.
+> El modelo se elige con `OLLAMA_MODEL` (por defecto `qwen3:1.7b`); `OLLAMA_URL` apunta al
+> servidor de Ollama (por defecto `http://127.0.0.1:11434`).
 
-| Persona | Responsabilidad |
-|---|---|
-| **A — Núcleo de datos e inteligencia** | Importador, modelo de datos, motor estadístico, predicciones, recomendaciones, endpoints |
-| **B — Producto: UI y Asistente IA** | Dashboard, wizard de importación, panel de alertas, chat con Ollama + function calling |
+## Datos de demostración
 
-El detalle del plan está en el repositorio de gestión: **`inventario-ia-docs`**
-(requisitos, roadmap semanal, roles, ADRs y plantilla de reuniones).
+La base `backend/datos/inventario.db` **no se versiona**: es un binario generado.
 
-## Reglas del equipo
+1. Al arrancar, la API crea el esquema vacío (`CREATE TABLE IF NOT EXISTS`).
+2. Se puebla importando el Excel de demo:
+   - desde la interfaz, en **Importar** (ruta `/importar`), o
+   - por API: `POST /api/importar` con `backend/datos/ventas_demo.xlsx`.
+3. El Excel de demo se regenera con:
+   ```bash
+   python backend/scripts/generar_datos_prueba.py
+   ```
 
-1. **El contrato de API (`docs/openapi.yaml`) es la ley.** Cualquier cambio se acuerda y se registra como ADR el mismo día.
-2. Los `TODO(Persona A)` y `TODO(Persona B)` marcan el trabajo pendiente del prototipo.
-3. Commits pequeños con formato `feat|fix|docs: descripción`.
+## API
+
+| Método | Ruta | Qué hace |
+|---|---|---|
+| GET | `/` | identificación del servicio |
+| GET | `/health` | estado de la API |
+| GET | `/api/kpis` | indicadores de inventario y rotación |
+| GET | `/api/alertas` | alertas de agotamiento y comportamiento inusual |
+| GET | `/api/productos` | catálogo de productos |
+| GET | `/api/rotacion` | rotación por producto |
+| GET | `/api/recomendaciones` | recomendaciones de compra |
+| POST | `/api/importar` | importa Excel/CSV (`multipart/form-data`) |
+| POST | `/api/chat` | pregunta en lenguaje natural con function calling |
+
+Rutas del frontend: `/` (dashboard), `/importar`, `/alertas`, `/compras`, `/chat`.
+
+## Estructura
+
+```
+backend/
+  api/        main.py (API + chat), database.py, estadisticas.py, importador.py
+  datos/      ventas_demo.xlsx, ventas_demo.csv, inventario.db (generado, no versionado)
+  scripts/    generar_datos_prueba.py
+frontend/
+  src/        App.jsx, main.jsx, styles.css, components/, store/, utils/
+```
+
+## Notas
+
+- `frontend/package.json` declara `react-bootstrap`, pero **no se usa**: la interfaz usa un
+  sistema de diseño propio (`frontend/src/styles.css`). Retirarlo está pendiente.
+- No hay CDN ni tipografías externas: todo es local y funciona sin conexión.

@@ -1,0 +1,18 @@
+# Dependencias del backend (Inventario-IA)
+#
+# Versiones tomadas del entorno verificado (Python 3.15, Windows 11):
+#   fastapi   -> framework HTTP de la API
+#   uvicorn   -> servidor ASGI (python -m uvicorn backend.api.main:app)
+#   pandas    -> motor estadistico y lectura del Excel (ADR-001/ADR-003)
+#   openpyxl  -> motor de lectura .xlsx usado por pandas.read_excel
+#
+# NO se requiere python-multipart: el endpoint /api/importar trae su propio
+# parser multipart (backend/api/main.py::_extraer_archivo_multipart) para no
+# depender de ese paquete.
+#
+# Instalación:  pip install -r requirements.txt
+
+fastapi==0.162.0
+uvicorn==0.54.0
+pandas==3.1.1
+openpyxl==3.1.5

@@ -1,139 +1,101 @@
-"""Generador de datos de prueba — Inventario-IA.
-
-Crea `datos/ventas_demo.xlsx` con ~6 meses de ventas de un negocio tipo
-ferretería + tienda de barrio: ~200 productos, estacionalidad, más ventas
-los fines de semana, productos estrella, de baja rotación y "muertos".
-
-Uso (desde backend/ con el venv activo):
-    python scripts/generar_datos_prueba.py
 """
-import sys
+Genera los datos de prueba del prototipo: datos/ventas_demo.xlsx
+
+Produce un Excel con dos hojas (ADR-003):
+  - productos: sku, producto, categoria, costo, precio_venta, stock_inicial, stock_minimo
+  - ventas:    fecha, producto, cantidad, precio
+
+Uso:
+  python scripts/generar_datos_prueba.py
+"""
+
+import random
+from datetime import date, timedelta
 from pathlib import Path
 
-import numpy as np
-import pandas as pd
+BASE_DIR = Path(__file__).resolve().parent.parent
+CARPETA_DATOS = BASE_DIR / "datos"
+ARCHIVO_SALIDA = CARPETA_DATOS / "ventas_demo.xlsx"
 
-REPO_RAIZ = Path(__file__).resolve().parents[2]
-ARCHIVO_SALIDA = REPO_RAIZ / "datos" / "ventas_demo.xlsx"
+# Catálogo de una ferretería pequeña (con stock varied para activar alertas)
+CATALOGO = [
+    # sku, producto, categoria, costo, precio_venta, stock_inicial, stock_minimo
+    ("MART-PRO", "Martillo profesional", "Herramientas de mano", 28.00, 45.00, 4, 6),
+    ("CIN-ACERO", "Cincel de acero", "Herramientas de mano", 16.50, 28.50, 3, 4),
+    ("ALIC-12", "Alicate 12 pulgadas", "Herramientas de mano", 11.00, 19.90, 9, 5),
+    ("TORN-840", "Tornillos 8x40 (caja 100)", "Fijaciones", 22.00, 34.90, 2, 3),
+    ("TARJ-12", "TornilloMetrico 12mm", "Fijaciones", 0.25, 0.45, 180, 60),
+    ("CBL-5M", "Cable eléctrico 5m", "Materiales eléctricos", 7.40, 12.90, 5, 8),
+    ("LAMP-LED", "Bombilla LED 9W", "Materiales eléctricos", 3.20, 6.50, 14, 10),
+    ("CINTA-50", "Cinta aislante 50m", "Materiales eléctricos", 4.10, 7.90, 8, 6),
+    ("PINT-BL", "Pintura blanca 4L", "Pinturas", 19.00, 29.90, 3, 5),
+    ("BROCHA-3", "Brocha 3 pulgadas", "Pinturas", 2.80, 5.90, 11, 8),
+]
 
-N_PRODUCTOS = 200
-DIAS = 180
-SEMILLA = 42
-
-# Catálogo base por categoría (nombres realistas de ferretería/tienda)
-CATEGORIAS = {
-    "Herramientas": ["Martillo", "Destornillador Phillips", "Llave inglesa", "Alicate",
-                     "Sierra manual", "Taladro", "Cinta métrica", "Nivel"],
-    "Fijaciones": ["Clavo 2 pulgadas", "Tornillo 1/4", "Tarugo", "Silicona",
-                   "Pegamento universal", "Alambre galvanizado"],
-    "Pinturas": ["Pintura látex blanca", "Esmalte", "Brocha 2 pulgadas", "Rodillo",
-                 "Thinner", "Masilla"],
-    "Electricidad": ["Cable eléctrico", "Bombillo LED", "Interruptor", "Toma corriente",
-                     "Cinta aislante", "Fusible"],
-    "Plomería": ["Tubo PVC", "Codo PVC", "Llave de paso", "Cinta teflón",
-                 "Grifería lavamanos", "Flexible inodoro"],
-    "Abarrotes": ["Arroz 1kg", "Azúcar 1kg", "Aceite 1L", "Harina 1kg", "Sal 500g",
-                  "Fideos 500g", "Atún lata", "Café 250g"],
-    "Bebidas": ["Gaseosa 2L", "Agua 600ml", "Jugo 1L", "Cerveza 650ml"],
-    "Limpieza": ["Detergente 1kg", "Jabón de barra", "Cloro 1L", "Lavaplatos 900ml",
-                 "Escoba", "Trapeador"],
-}
-VARIANTES = ["", " estándar", " premium", " económica", " x6", " x12", " jumbo"]
+# Producto que no debe tener ventas: sirve para ver "productos muertos" (RF-12)
+PRODUCTO_SIN_VENTAS = ("EXT-2M", "Extensor 2 metros", "Accesorios", 9.90, 15.90, 2, 4)
 
 
-def generar() -> tuple[pd.DataFrame, pd.DataFrame]:
-    rng = np.random.default_rng(SEMILLA)
+def _fecha_aleatoria(dias_atras: int) -> date:
+    """Fecha aleatoria dentro de los últimos N días."""
+    return date.today() - timedelta(days=random.randint(0, dias_atras))
 
-    # 1) Catálogo de productos
-    nombres: list[str] = []
-    categorias: list[str] = []
-    while len(nombres) < N_PRODUCTOS:
-        for categoria, base_nombres in CATEGORIAS.items():
-            for nombre_base in base_nombres:
-                for variante in VARIANTES:
-                    if len(nombres) >= N_PRODUCTOS:
-                        break
-                    nombres.append(f"{nombre_base}{variante}")
-                    categorias.append(categoria)
 
-    # 2) Perfil de demanda por producto
-    #    55% normal · 20% estrella · 15% baja rotación · 10% muerto (sin ventas)
-    base_diaria = rng.choice(
-        [3.0, 12.0, 0.15, 0.0],
-        size=N_PRODUCTOS,
-        p=[0.55, 0.20, 0.15, 0.10],
-    )
-    amplitud_estacional = rng.uniform(0.0, 0.4, N_PRODUCTOS)   # ×(0.6–1.4) según época
-    fase_estacional = rng.uniform(0, 2 * np.pi, N_PRODUCTOS)
-    precio_unitario = np.round(rng.uniform(0.5, 60, N_PRODUCTOS), 2)
-    costo = np.round(precio_unitario * rng.uniform(0.55, 0.8, N_PRODUCTOS), 2)
-    stock_inicial = np.round(rng.uniform(0, 120, N_PRODUCTOS)).astype(int)
-    stock_minimo = np.round(rng.uniform(3, 15, N_PRODUCTOS)).astype(int)
+def _generar_ventas(cantidad_filas: int) -> list:
+    """Genera ventas con algo de estacionalidad: algunos productos venden más."""
+    ventas = []
+    # Peso de rotación por producto: los primeros Selling más (RF-11)
+    pesos = [30, 20, 12, 18, 40, 15, 10, 8, 6, 5]
+    nombres = [c[1] for c in CATALOGO]
+    chances = list(range(len(nombres)))
 
-    # 3) Demanda diaria (vectorizada): 200 productos × 180 días
-    dias_idx = np.arange(DIAS)
-    fechas = pd.date_range(end=pd.Timestamp.today().normalize(), periods=DIAS, freq="D")
-    es_fin_de_semana = np.asarray(fechas.day_of_week >= 5, dtype=float)  # sáb=5, dom=6
-
-    lam = base_diaria[:, None] * (
-        1
-        + amplitud_estacional[:, None] * np.sin(2 * np.pi * dias_idx[None, :] / 30 + fase_estacional[:, None])
-        + 0.25 * es_fin_de_semana[None, :]
-    )
-    ventas = rng.poisson(np.clip(lam, 0, None))  # (N_PRODUCTOS, DIAS)
-
-    # 4) Aplanar solo las celdas con ventas > 0
-    producto_idx, dia_idx = np.nonzero(ventas)
-    cantidades = ventas[producto_idx, dia_idx]
-
-    df_ventas = pd.DataFrame(
-        {
-            # Fechas como datetime reales (no texto) para que Excel las lea bien
-            "fecha": fechas[dia_idx],
-            "sku": [f"SKU-{i + 1:04d}" for i in producto_idx],
-            "producto": [nombres[i] for i in producto_idx],
-            "categoria": [categorias[i] for i in producto_idx],
-            "cantidad": cantidades.astype(int),
-            "precio_unitario": precio_unitario[producto_idx],
-        }
-    )
-    df_ventas["importe"] = (df_ventas["cantidad"] * df_ventas["precio_unitario"]).round(2)
-
-    df_productos = pd.DataFrame(
-        {
-            "sku": [f"SKU-{i + 1:04d}" for i in range(N_PRODUCTOS)],
-            "producto": nombres,
-            "categoria": categorias,
-            "costo": costo,
-            "precio_venta": precio_unitario,
-            "stock_inicial": stock_inicial,
-            "stock_minimo": stock_minimo,
-        }
-    )
-
-    return df_ventas, df_productos
+    for _ in range(cantidad_filas):
+        indice = random.choices(chances, weights=pesos, k=1)[0]
+        nombre = nombres[indice]
+        _, _, _, costo, precio_venta, _, _ = CATALOGO[indice]
+        cantidad = random.randint(1, 8)
+        precio = round(precio_venta * random.uniform(0.95, 1.0), 2)
+        ventas.append((_fecha_aleatoria(60), nombre, cantidad, precio))
+    return ventas
 
 
 def main() -> None:
-    df_ventas, df_productos = generar()
-    ARCHIVO_SALIDA.parent.mkdir(parents=True, exist_ok=True)
+    """Genera el archivo Excel de datos de prueba."""
+    import pandas as pd
 
-    with pd.ExcelWriter(ARCHIVO_SALIDA, engine="openpyxl") as escritor:
-        df_ventas.to_excel(escritor, sheet_name="ventas", index=False)
-        df_productos.to_excel(escritor, sheet_name="productos", index=False)
+    random.seed(42)  # datos reproducibles
 
-    muertos = int((df_productos["producto"].isin(df_ventas["producto"]) == False).sum())
-    print(f"✅ Archivo generado: {ARCHIVO_SALIDA}")
-    print(f"   Hoja 'ventas':    {len(df_ventas):,} filas ({df_ventas['fecha'].min()} → {df_ventas['fecha'].max()})")
-    print(f"   Hoja 'productos': {len(df_productos)} productos ({muertos} sin ventas: baja rotación/muertos)")
-    print("\nPróximo paso: súbelo desde la app (pestaña 'Importar') o pruébalo con:")
-    print("  curl -F 'archivo=@datos/ventas_demo.xlsx' http://localhost:8000/api/importar")
+    CARPETA_DATOS.mkdir(parents=True, exist_ok=True)
+
+    productos = [
+        {
+            "sku": sku,
+            "producto": nombre,
+            "categoria": categoria,
+            "costo": costo,
+            "precio_venta": precio,
+            "stock_inicial": stock,
+            "stock_minimo": minimo,
+        }
+        for sku, nombre, categoria, costo, precio, stock, minimo in CATALOGO + [PRODUCTO_SIN_VENTAS]
+    ]
+
+    ventas = _generar_ventas(600)
+    df_ventas = pd.DataFrame(ventas, columns=["fecha", "producto", "cantidad", "precio"])
+    df_ventas["fecha"] = pd.to_datetime(df_ventas["fecha"]).dt.strftime("%Y-%m-%d")
+    df_ventas = df_ventas.sort_values("fecha").reset_index(drop=True)
+
+    df_productos = pd.DataFrame(productos)
+
+    with pd.ExcelWriter(ARCHIVO_SALIDA, engine="openpyxl") as writer:
+        df_productos.to_excel(writer, sheet_name="productos", index=False)
+        df_ventas.to_excel(writer, sheet_name="ventas", index=False)
+
+    print(f"Archivo generado: {ARCHIVO_SALIDA}")
+    print(f"  Hoja 'productos': {len(df_productos)} filas")
+    print(f"  Hoja 'ventas':    {len(df_ventas)} filas")
+    print(f"  Rango de fechas:  {df_ventas['fecha'].min()} a {df_ventas['fecha'].max()}")
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except ImportError as exc:
-        print(f"Falta una dependencia: {exc}")
-        print("Activa el venv e instala requisitos:  pip install -r requirements.txt")
-        sys.exit(1)
+    main()

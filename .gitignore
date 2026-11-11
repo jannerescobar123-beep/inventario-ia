@@ -1,30 +1,62 @@
-# Python
+# ------------------------------------------------------------------
+# Inventario-IA — ficheros que NO deben entrar en el control de versiones
+# ------------------------------------------------------------------
+
+# --- Python ---
 __pycache__/
 *.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+build/
 .venv/
 venv/
-*.egg-info/
+env/
 .pytest_cache/
+.mypy_cache/
 
-# Base de datos y datos locales
+# --- Base de datos local (archivo único, ADR-001) ---
+# La BD se crea sola (vacía) al arrancar la API y se puebla importando
+# backend/datos/ventas_demo.xlsx (versionado). No se versiona el binario.
 *.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
 *.sqlite3
-datos/
-!datos/.gitkeep
 
-# Node / frontend
-node_modules/
-dist/
-.vite/
-
-# Entorno y SO
+# --- Entorno y secretos ---
 .env
 .env.*
 !.env.example
+*.pem
+*.key
+*.p12
+
+# --- Node / frontend ---
+node_modules/
+dist/
+build/
+.vite/
+*.local
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# --- Logs y artefactos de ejecución ---
+*.log
+vite-log*.txt
+
+# --- Sistema operativo y editores ---
 .DS_Store
 Thumbs.db
-
-# IDEs
-.idea/
+desktop.ini
 .vscode/
-*.swp
+.idea/
+
+# --- Duplicado accidental en la raíz del proyecto ---
+# Copia byte a byte de frontend/vite.config.js (mismo SHA-256).
+# Vite usa frontend/vite.config.js; este duplicado no lo usa nadie.
+# Pendiente de borrar del disco (no se borra sin autorización).
+frontend\ vite.config.js
