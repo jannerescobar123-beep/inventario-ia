@@ -5,13 +5,14 @@ from pathlib import Path
 from typing import Optional, Dict, Any, Set, Tuple
 
 try:  # Carga como parte del paquete (python -m uvicorn backend.api.main:app)
-    from backend.api.database import init_db
+    from backend.api import database
 except ImportError:  # Ejecución directa del módulo (backend/api)
-    from database import init_db
+    import database
 
-BASE_DIR = Path(__file__).parent.parent  # backend/
-DB_PATH = BASE_DIR / "datos" / "inventario.db"
-DEMO_FILE = BASE_DIR / "datos" / "ventas_demo.xlsx"
+# La ruta de la BD vive SOLO en database.DB_PATH (importar.database la relee
+# en cada conexión para no duplicar estado ni ignorar tests con BD temporal).
+init_db = database.init_db
+DEMO_FILE = Path(__file__).parent.parent / "datos" / "ventas_demo.xlsx"
 
 # Extensiones de archivo soportadas por el importador
 EXTENSIONES_EXCEL = {".xlsx", ".xls", ".xlsm"}
@@ -20,8 +21,8 @@ EXTENSIONES_CSV = {".csv"}
 
 def _conectar() -> sqlite3.Connection:
     """Abrir conexión a SQLite creando la carpeta de datos si no existe."""
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    return sqlite3.connect(str(DB_PATH))
+    database.DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+    return sqlite3.connect(str(database.DB_PATH))
 
 
 def _normalizar_fecha(valor: Any) -> str:

@@ -14,9 +14,10 @@ services:
       - "8000:8000"
     environment:
       - OLLAMA_URL=http://ollama:11434
-      - OLLAMA_MODEL=llama3.2:3b
+      - OLLAMA_MODEL=qwen3:1.7b
     volumes:
-      - backend_data:/app/data
+      # La BD vive en backend/datos/inventario.db (BASE_DIR = backend/)
+      - backend_data:/app/datos
     depends_on:
       - ollama
 

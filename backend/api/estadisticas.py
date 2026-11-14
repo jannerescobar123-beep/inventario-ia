@@ -80,63 +80,80 @@ def calcular_rotacion_inventario(conn, dias: int = 30) -> Dict[str, Any]:
     Retorna rotación, productos de baja rotación y productos "muertos" (RF-12).
     """
     cursor = conn.cursor()
-    
-    # Última fecha de venta por producto
-    cursor.execute("""
+
+    # Ancla temporal: la última venta registrada. Así la ventana de `dias`
+    # se calcula sobre los datos realmente importados (pueden no ser de hoy).
+    cursor.execute("SELECT MAX(fecha) FROM ventas")
+    fila_anchor = cursor.fetchone()
+    anchor = fila_anchor[0] if fila_anchor and fila_anchor[0] else datetime.now().strftime("%Y-%m-%d")
+
+    # Ventas por producto: histórico total y ventana de los últimos `dias`
+    # días (relativos al ancla), más la fecha de la última venta.
+    cursor.execute(f"""
         SELECT p.id, p.nombre, p.stock_actual,
                COALESCE(SUM(v.cantidad), 0) as total_vendido,
+               COALESCE(SUM(CASE WHEN v.fecha > date(?, '-{dias} days')
+                                  AND v.fecha <= date(?)
+                                 THEN v.cantidad ELSE 0 END), 0) as vendido_ventana,
                MAX(v.fecha) as ultima_venta
         FROM productos p
         LEFT JOIN ventas v ON p.nombre_norm = v.producto_norm
         GROUP BY p.id
-    """)
+    """, (anchor, anchor))
     filas = cursor.fetchall()
-    
+
     hoy = datetime.now()
     rotacion = []
     baja_rotacion = []
-    muertos = []
-    
+
     for fila in filas:
-        prod_id, nombre, stock_actual, total_vendido, ultima_venta = fila
-        
-        # Rotación = total vendido / días
-        if total_vendido > 0 and ultima_venta:
-            fecha_venta = _a_datetime(ultima_venta)
-            dias_desde_ultima = (hoy - fecha_venta).days if fecha_venta else 0
-            rotacion_mes = total_vendido / max(dias_desde_ultima, 1) * 30
-        else:
-            rotacion_mes = 0
-            dias_desde_ultima = None
-        
+        prod_id, nombre, stock_actual, total_vendido, vendido_ventana, ultima_venta = fila
+        vendido_ventana = int(vendido_ventana or 0)
+
+        fecha_venta = _a_datetime(ultima_venta)
+        dias_desde_ultima = (hoy - fecha_venta).days if fecha_venta else None
+
+        # Venta diaria promedio dentro de la ventana (base de cobertura RF-13)
+        venta_diaria = vendido_ventana / dias if dias > 0 else 0
+
+        # Índice de rotación (RF-11): unidades vendidas en la ventana
+        # normalizadas a 30 días. Ej.: 45 unidades en 30 días -> 45.
+        indice_rotacion = venta_diaria * 30 if dias > 0 else 0
+
         rotacion.append({
             "id": prod_id,
             "nombre": nombre,
             "stock_actual": stock_actual,
-            "total_vendido_30d": total_vendido,
+            "total_vendido": int(total_vendido or 0),
+            "total_vendido_30d": vendido_ventana,
             "dias_desde_ultima_venta": dias_desde_ultima,
-            "indice_rotacion": round(rotacion_mes, 2) if rotacion_mes else 0
+            "indice_rotacion": round(indice_rotacion, 2) if indice_rotacion else 0
         })
-        
-        # RF-12: Productos de baja rotación (menos de 1 unidad/mes) o sin ventas
-        if total_vendido == 0 or rotacion_mes < 1:
+
+        # RF-12: Productos de baja rotación (menos de 1 unidad/mes en la
+        # ventana) o sin ventas nunca registradas
+        if total_vendido == 0:
             baja_rotacion.append({
                 "id": prod_id,
                 "nombre": nombre,
                 "stock_actual": stock_actual,
-                "razon": "sin_ventas" if total_vendido == 0 else "baja_rotacion"
+                "razon": "sin_ventas"
             })
-        
-        # RF-13: Días de cobertura = stock_actual / (vendido_promedio_diario)
-        if total_vendido > 0 and dias_desde_ultima:
-            dias_cob = stock_actual / (total_vendido / max(dias_desde_ultima, 1)) * 30
-        elif stock_actual > 0 and total_vendido == 0:
-            dias_cob = None  # Stock ilimitado (sin ventas recientes)
-        else:
-            dias_cob = 0
-        
-        if dias_cob is not None and dias_cob >= 0:
+        elif indice_rotacion < 1:
+            baja_rotacion.append({
+                "id": prod_id,
+                "nombre": nombre,
+                "stock_actual": stock_actual,
+                "razon": "baja_rotacion"
+            })
+
+        # RF-13: Días de cobertura = stock_actual / venta_diaria promedio.
+        # Sin ventas en la ventana la cobertura es infinita -> None.
+        if venta_diaria > 0:
+            dias_cob = stock_actual / venta_diaria
             rotacion[-1]["dias_cobertura"] = round(dias_cob, 1)
+        else:
+            rotacion[-1]["dias_cobertura"] = None
     
     # Ordenar baja rotación por stock (los de más stock primero = riesgo mayor)
     baja_rotacion.sort(key=lambda x: x["stock_actual"], reverse=True)
@@ -320,10 +337,10 @@ def predecir_demanda_media_movil(conn, producto_nombre: str,
         SELECT DATE(v.fecha) as dia, SUM(v.cantidad) as cantidad_diaria
         FROM ventas v
         JOIN productos p ON p.nombre_norm = v.producto_norm
-        WHERE UPPER(p.nombre) = ?
+        WHERE p.nombre = ?
         GROUP BY DATE(v.fecha)
         ORDER BY dia DESC
-        LIMIT 90  # Últimos 3 meses
+        LIMIT 90  -- Últimos 3 meses
     """, (producto_nombre,))
     
     filas = cursor.fetchall()
@@ -370,10 +387,10 @@ def predecir_demanda_holt_winters(conn, producto_nombre: str,
         SELECT DATE(v.fecha) as dia, SUM(v.cantidad) as cantidad_diaria
         FROM ventas v
         JOIN productos p ON p.nombre_norm = v.producto_norm
-        WHERE UPPER(p.nombre) = ?
+        WHERE p.nombre = ?
         GROUP BY DATE(v.fecha)
         ORDER BY dia DESC
-        LIMIT 180  # Últimos 6 meses
+        LIMIT 180  -- Últimos 6 meses
     """, (producto_nombre,))
     
     filas = cursor.fetchall()

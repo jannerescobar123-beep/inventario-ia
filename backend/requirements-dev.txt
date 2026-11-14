@@ -1,0 +1,15 @@
+# Dependencias de desarrollo y pruebas (Inventario-IA)
+#
+# El requirements.txt raíz contiene SOLO dependencias de producción.
+# Este fichero se añade encima para ejecutar la suite:
+#
+#   backend/.venv/bin/python -m pip install -r requirements.txt -r backend/requirements-dev.txt
+#   backend/.venv/bin/python -m pytest backend/tests/ -v
+#
+# pytest    -> runner de pruebas
+# httpx     -> transporte de starlette.testclient (TestClient)
+# PyYAML    -> parsea docs/openapi.yaml en el test de sincronización de contrato
+
+pytest>=8.0
+httpx>=0.27
+PyYAML>=6.0

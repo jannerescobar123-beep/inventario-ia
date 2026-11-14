@@ -1,11 +1,12 @@
 openapi: 3.0.3
 info:
   title: Inventario-IA API
-  version: 0.1.0
+  version: 0.3.0
   description: >
-    Contrato inicial acordado entre Persona A (backend) y Persona B (frontend).
+    Contrato acordado entre Persona A (backend) y Persona B (frontend).
+    Sincronizado con la implementación real (backend/api/main.py) en v0.3.
     REGLA: cualquier cambio aquí debe registrarse como ADR en el repositorio
-    inventario-ia-docs y avisarse el mismo día.
+    inventario-ia-docs y avisarse el mismo día (ver ADR-004).
 servers:
   - url: http://localhost:8000
     description: Desarrollo local
@@ -17,10 +18,17 @@ tags:
   - name: Alertas
   - name: Chat IA
 paths:
+  /:
+    get:
+      tags: [Sistema]
+      summary: Identidad del servicio
+      responses:
+        '200':
+          description: OK
   /health:
     get:
       tags: [Sistema]
-      summary: Estado del servicio
+      summary: Estado del servicio (API + base de datos)
       responses:
         '200':
           description: OK
@@ -31,17 +39,21 @@ paths:
     post:
       tags: [Importación]
       summary: Importa un archivo Excel (.xlsx/.xls) o CSV de ventas
+      description: >
+        ADR-003: si el libro trae una hoja "productos" se importa primero el
+        catálogo y luego la hoja "ventas".
       requestBody:
         required: true
         content:
           multipart/form-data:
             schema:
               type: object
-              required: [archivo]
+              required: [file]
               properties:
-                archivo:
+                file:
                   type: string
                   format: binary
+                  description: Archivo subido en el campo 'file'
       responses:
         '200':
           description: Resumen de la importación
@@ -49,94 +61,118 @@ paths:
             application/json:
               schema: { $ref: '#/components/schemas/ResumenImportacion' }
         '400':
-          description: Formato no soportado o columnas no reconocidas
+          description: Formato no soportado, campo 'file' ausente o columnas no reconocidas
   /api/productos:
     get:
       tags: [Productos]
       summary: Lista de productos
       responses:
         '200':
-          description: Lista de productos
+          description: Lista de productos ordenada por nombre
           content:
             application/json:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/Producto' }
-    post:
-      tags: [Productos]
-      summary: Crea un producto manualmente
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema: { $ref: '#/components/schemas/ProductoNuevo' }
-      responses:
-        '201':
-          description: Creado
-          content:
-            application/json:
-              schema: { $ref: '#/components/schemas/Producto' }
   /api/kpis:
     get:
       tags: [Análisis]
-      summary: KPIs generales del negocio
+      summary: KPIs generales del negocio (RF-09)
       responses:
         '200':
-          description: KPIs
+          description: KPIs calculados sobre SQLite
           content:
             application/json:
               schema: { $ref: '#/components/schemas/KPIs' }
-  /api/analisis/rotacion:
+  /api/rotacion:
     get:
       tags: [Análisis]
-      summary: Rotación por producto y productos de baja rotación
-      parameters:
-        - { in: query, name: dias, schema: { type: integer, default: 90 } }
+      summary: Rotación por producto, baja rotación y productos sin ventas (RF-11 a RF-13)
+      description: >
+        La ventana de venta por defecto es de 30 días anclada en la última
+        venta registrada. dias_cobertura = stock / venta_diaria_media (null si
+        no hay ventas en la ventana).
       responses:
         '200':
-          description: Datos de rotación (o estado "pendiente" si aún no está implementado)
+          description: Datos de rotación
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/RespuestaAnalisis' }
+              schema: { $ref: '#/components/schemas/Rotacion' }
   /api/predicciones/{producto_id}:
     get:
       tags: [Análisis]
-      summary: Predicción de demanda de un producto
+      summary: Predicción de demanda de un producto para 7, 14 y 30 días (RF-18 a RF-20)
       parameters:
         - { in: path, name: producto_id, required: true, schema: { type: integer } }
-        - { in: query, name: dias, schema: { type: integer, default: 7, enum: [7, 14, 30] } }
       responses:
         '200':
-          description: Predicción (o estado "pendiente")
+          description: Predicción por media móvil simple
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/RespuestaAnalisis' }
-  /api/recomendaciones/compra:
+              schema: { $ref: '#/components/schemas/Prediccion' }
+        '400':
+          description: Histórico de ventas insuficiente para el producto
+        '404':
+          description: Producto no encontrado
+  /api/recomendaciones:
     get:
       tags: [Análisis]
-      summary: Lista de compra sugerida para esta semana
+      summary: Lista de compra sugerida para esta semana (RF-22 a RF-27)
+      parameters:
+        - { in: query, name: lead_time, schema: { type: integer, default: 7 }, description: Días de entrega del proveedor }
       responses:
         '200':
-          description: Recomendaciones (o estado "pendiente")
+          description: Recomendaciones ordenadas por urgencia
           content:
             application/json:
-              schema: { $ref: '#/components/schemas/RespuestaAnalisis' }
+              schema: { $ref: '#/components/schemas/Recomendaciones' }
+  /api/abc:
+    get:
+      tags: [Análisis]
+      summary: Clasificación ABC del inventario (RF-15)
+      description: A = 80% del valor, B = 15%, C = 5%, sobre stock * precio de venta.
+      responses:
+        '200':
+          description: Productos agrupados por clase
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/ABC' }
+  /api/capital:
+    get:
+      tags: [Análisis]
+      summary: Capital inmovilizado en inventario por producto (RF-17)
+      responses:
+        '200':
+          description: Capital inmovilizado (stock * costo)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Capital' }
+  /api/estacionalidad:
+    get:
+      tags: [Análisis]
+      summary: Detectar patrones estacionales de ventas (RF-14)
+      parameters:
+        - { in: query, name: producto, schema: { type: string }, description: Nombre opcional para analizar un solo producto }
+      responses:
+        '200':
+          description: Estacionalidad detectada (o "sin_datos"/"insuficiente_datos")
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Estacionalidad' }
   /api/alertas:
     get:
       tags: [Alertas]
-      summary: Alertas recientes (quiebres de stock, anomalías, baja rotación)
+      summary: Alertas de riesgo de agotamiento y comportamientos inusuales (RF-28, RF-29)
       responses:
         '200':
-          description: Lista de alertas
+          description: Alertas agrupadas por tipo
           content:
             application/json:
-              schema:
-                type: array
-                items: { $ref: '#/components/schemas/Alerta' }
+              schema: { $ref: '#/components/schemas/Alertas' }
   /api/chat:
     post:
       tags: [Chat IA]
-      summary: Pregunta al asistente con IA local
+      summary: Pregunta al asistente con IA local (Ollama)
       requestBody:
         required: true
         content:
@@ -144,96 +180,197 @@ paths:
             schema: { $ref: '#/components/schemas/ChatRequest' }
       responses:
         '200':
-          description: Respuesta del asistente (siempre 200; errores de conexión se informan en la respuesta)
+          description: Respuesta del asistente (siempre 200; si Ollama no responde, la respuesta explica el fallo y adjunta el contexto JSON)
           content:
             application/json:
               schema: { $ref: '#/components/schemas/ChatResponse' }
+        '400':
+          description: Cuerpo ausente o mensaje vacío
 components:
   schemas:
     Estado:
       type: object
       properties:
         status: { type: string, example: 'ok' }
-        app: { type: string, example: 'inventario-ia' }
+        database: { type: string, example: 'connected' }
     Producto:
       type: object
       properties:
         id: { type: integer }
         sku: { type: string, nullable: true }
         nombre: { type: string }
-        categoria: { type: string, default: 'General' }
-        unidad: { type: string, default: 'unidad' }
-        costo: { type: number, default: 0 }
-        precio_venta: { type: number, default: 0 }
-        stock_actual: { type: number, default: 0 }
-        stock_minimo: { type: number, default: 0 }
+        categoria: { type: string, nullable: true }
+        costo: { type: number, nullable: true }
+        precio_venta: { type: number, nullable: true }
+        stock_actual: { type: number }
+        stock_minimo: { type: number }
       required: [id, nombre]
-    ProductoNuevo:
-      type: object
-      properties:
-        sku: { type: string, nullable: true }
-        nombre: { type: string }
-        categoria: { type: string, default: 'General' }
-        unidad: { type: string, default: 'unidad' }
-        costo: { type: number, default: 0 }
-        precio_venta: { type: number, default: 0 }
-        stock_actual: { type: number, default: 0 }
-        stock_minimo: { type: number, default: 0 }
-      required: [nombre]
     KPIs:
       type: object
       properties:
         ventas_totales: { type: number }
-        num_ventas: { type: integer }
         ticket_promedio: { type: number }
-        unidades_vendidas: { type: number }
-        num_productos: { type: integer }
-        periodo_inicio: { type: string, format: date, nullable: true }
-        periodo_fin: { type: string, format: date, nullable: true }
-    ResumenImportacion:
-      type: object
-      properties:
-        archivo: { type: string }
-        filas_ok: { type: integer }
-        filas_error: { type: integer }
-        errores:
+        unidades_vendidas: { type: integer }
+        margen_total: { type: number }
+        top_productos:
           type: array
-          items: { type: string }
-        importacion_id: { type: integer, nullable: true }
-        mensaje: { type: string, nullable: true }
-        productos_creados: { type: integer, description: 'Productos creados desde la hoja "productos"' }
-        productos_actualizados: { type: integer, description: 'Productos actualizados desde la hoja "productos"' }
-    Alerta:
+          items: { type: object }
+    Rotacion:
       type: object
       properties:
-        id: { type: integer }
-        tipo: { type: string, example: 'riesgo_agotamiento' }
-        severidad: { type: string, enum: [critica, media, baja] }
-        producto_id: { type: integer, nullable: true }
-        mensaje: { type: string }
-        fecha: { type: string, format: date-time }
-        leida: { type: boolean }
+        productos:
+          type: array
+          description: Uno por producto del catálogo
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              nombre: { type: string }
+              stock_actual: { type: number }
+              total_vendido: { type: integer, description: Histórico de unidades vendidas }
+              total_vendido_30d: { type: integer, description: Unidades vendidas en la ventana (30 días por defecto) }
+              dias_desde_ultima_venta: { type: integer, nullable: true }
+              indice_rotacion: { type: number, description: Unidades/mes normalizado a 30 días }
+              dias_cobertura: { type: number, nullable: true, description: stock / venta_diaria_media; null si no hay ventas en la ventana }
+        baja_rotacion:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: integer }
+              nombre: { type: string }
+              stock_actual: { type: number }
+              razon: { type: string, enum: [sin_ventas, baja_rotacion] }
+        muertos:
+          type: array
+          description: Nombres sin ventas registradas nunca
+          items: { type: string }
+    Prediccion:
+      type: object
+      properties:
+        producto_id: { type: integer }
+        producto: { type: string }
+        predicciones:
+          type: object
+          properties:
+            '7_dias': { type: integer }
+            '14_dias': { type: integer }
+            '30_dias': { type: integer }
+        metodo: { type: string, example: media_movil_simple }
+        historico_dias: { type: integer }
+        ultima_actualizacion: { type: string, format: date-time }
+    Recomendaciones:
+      type: object
+      properties:
+        recomendaciones:
+          type: array
+          items: { $ref: '#/components/schemas/Recomendacion' }
+        total_analizados: { type: integer }
+        total_recomendado: { type: integer }
+        lead_time_asumido: { type: integer }
+        fecha_referencia_demanda: { type: string, format: date }
     Recomendacion:
       type: object
       properties:
+        producto_id: { type: integer }
         producto: { type: string }
-        cantidad_sugerida: { type: number }
-        urgencia: { type: string, enum: [critica, media, baja] }
-        motivo: { type: string }
-    RespuestaAnalisis:
+        stock_actual: { type: number }
+        stock_minimo: { type: number }
+        demanda_proyectada: { type: integer }
+        cantidad_sugerida: { type: integer }
+        punto_reorden: { type: integer }
+        punto_reorden_detalle: { type: string }
+        urgencia: { type: string, enum: [crítico, medio, bajo] }
+        fecha_sugerida: { type: string, format: date }
+        fecha_entrega_estimada: { type: string, format: date }
+        valor_inventario: { type: number }
+        lead_time_dias: { type: integer }
+    ABC:
       type: object
       properties:
-        estado: { type: string, enum: [pendiente, ok] }
-        descripcion: { type: string }
-        datos: { type: object, nullable: true }
+        clases:
+          type: object
+          description: Claves A, B y C; cada una con su lista de productos
+          properties:
+            A: { type: array, items: { type: object } }
+            B: { type: array, items: { type: object } }
+            C: { type: array, items: { type: object } }
+        total_productos: { type: integer }
+        total_valor_inventario: { type: number }
+    Capital:
+      type: object
+      properties:
+        por_producto:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              stock: { type: number }
+              costo_unitario: { type: number }
+              precio_venta: { type: number }
+              capital: { type: number }
+        total_capital_inmovilizado: { type: number }
+    Estacionalidad:
+      type: object
+      properties:
+        estacional: { type: boolean }
+        patron: { type: string, example: 'peak_en_mes_10' }
+        promedios_mensuales:
+          type: object
+          additionalProperties: { type: number }
+    Alertas:
+      type: object
+      properties:
+        riesgo_agotamiento:
+          type: array
+          items:
+            type: object
+            properties:
+              producto_id: { type: integer }
+              producto: { type: string }
+              stock_actual: { type: number }
+              stock_minimo: { type: number }
+              riesgo: { type: string, enum: [agotamiento_inminente, agotamiento_pronto] }
+              dias_estimados: { type: integer, nullable: true }
+              valor_inventario: { type: number }
+        comportamiento:
+          type: object
+          description: Resultado del análisis de anomalías (picos/caídas)
+          properties:
+            alerta: { type: boolean }
+            media_diaria: { type: number }
+            desviacion_std: { type: number }
+            picos_detectados: { type: integer }
+            caidas_detectadas: { type: integer }
+    ResumenImportacion:
+      type: object
+      properties:
+        archivo_origen: { type: string }
+        total_ventas: { type: integer, description: Ventas importadas }
+        productos_creados: { type: integer, description: 'Productos creados desde la hoja "productos" o desde las ventas' }
+        productos_actualizados: { type: integer, description: 'Productos actualizados desde la hoja "productos"' }
+        errores:
+          type: array
+          items: { type: string }
     ChatRequest:
       type: object
       properties:
-        pregunta: { type: string }
-      required: [pregunta]
+        mensaje: { type: string }
+        historial:
+          type: array
+          description: Mensajes anteriores de la conversación (opcional; se usan los últimos 6)
+          items:
+            type: object
+            properties:
+              rol: { type: string, enum: [usuario, asistente] }
+              contenido: { type: string }
+      required: [mensaje]
     ChatResponse:
       type: object
       properties:
         respuesta: { type: string }
-        modelo: { type: string, example: 'llama3.2:3b' }
-        conectado: { type: boolean }
+        herramientas:
+          type: object
+          description: Datos reales usados como contexto (KPIs, recomendaciones, alertas)
+        contexto: { type: object }
+        modelo: { type: string, nullable: true, example: 'qwen3:1.7b', description: 'null si Ollama no respondió' }

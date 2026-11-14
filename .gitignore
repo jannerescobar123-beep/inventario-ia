@@ -25,6 +25,12 @@ env/
 *.sqlite
 *.sqlite3
 
+# --- Subidas temporales del importador y datos derivados ---
+# backend/datos/uploads/: copia temporal del archivo subido a /api/importar.
+# datos/ (raíz): artefactos locales de pruebas; no son fuente del proyecto.
+backend/datos/uploads/
+/datos/
+
 # --- Entorno y secretos ---
 .env
 .env.*

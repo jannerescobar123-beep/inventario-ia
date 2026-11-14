@@ -15,7 +15,11 @@ try:  # Carga como paquete: python -m uvicorn backend.api.main:app --port 8000
         alertas_riesgo_agotamiento,
         calcular_kpis,
         calcular_rotacion_inventario,
+        capital_inmovilizado_por_producto,
+        clasificar_abc,
+        detectar_estacionalidad,
         generar_recomendaciones_compra,
+        predecir_demanda_media_movil,
     )
     from backend.api.importador import importar_archivo
 except ImportError:  # Ejecución directa: python backend/api/main.py
@@ -25,7 +29,11 @@ except ImportError:  # Ejecución directa: python backend/api/main.py
         alertas_riesgo_agotamiento,
         calcular_kpis,
         calcular_rotacion_inventario,
+        capital_inmovilizado_por_producto,
+        clasificar_abc,
+        detectar_estacionalidad,
         generar_recomendaciones_compra,
+        predecir_demanda_media_movil,
     )
     from importador import importar_archivo
 
@@ -206,6 +214,59 @@ def api_recomendaciones(lead_time: int = 7):
     conn = get_db()
     try:
         return generar_recomendaciones_compra(conn, lead_time_dias=max(1, int(lead_time)))
+    finally:
+        conn.close()
+
+@app.get("/api/predicciones/{producto_id}")
+def api_predicciones(producto_id: int):
+    """
+    Predicción de demanda de un producto para 7, 14 y 30 días (RF-18 a RF-20).
+
+    Usa media móvil simple sobre el histórico de ventas del producto.
+    """
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("SELECT id, nombre FROM productos WHERE id = ?", (producto_id,))
+        producto = cursor.fetchone()
+        if producto is None:
+            raise HTTPException(status_code=404, detail="Producto no encontrado")
+        resultado = predecir_demanda_media_movil(conn, producto[1])
+        if "error" in resultado:
+            raise HTTPException(status_code=400, detail=f"Insuficiente historial para {producto[1]}")
+        return {"producto_id": producto_id, "producto": producto[1], **resultado}
+    finally:
+        conn.close()
+
+@app.get("/api/abc")
+def api_abc():
+    """Clasificación ABC del inventario (RF-15): A 80%, B 15%, C 5% del valor."""
+    conn = get_db()
+    try:
+        return clasificar_abc(conn)
+    finally:
+        conn.close()
+
+@app.get("/api/capital")
+def api_capital():
+    """Capital inmovilizado en inventario por producto (RF-17)."""
+    conn = get_db()
+    try:
+        return capital_inmovilizado_por_producto(conn)
+    finally:
+        conn.close()
+
+@app.get("/api/estacionalidad")
+def api_estacionalidad(producto: str = None):
+    """
+    Detectar patrones estacionales de ventas (RF-14).
+
+    Query params:
+      - producto: nombre opcional para analizar un solo producto.
+    """
+    conn = get_db()
+    try:
+        return detectar_estacionalidad(conn, producto_nombre=producto.upper() if producto else None)
     finally:
         conn.close()
 
@@ -420,6 +481,32 @@ PLACEHOLDERS_PLANTILLA = {
 }
 
 
+def _reparar_resumen_compra(texto: str, contexto: dict) -> str:
+    """
+    Completar la primera línea del resumen de compra con cifras reales.
+
+    El modelo de 1.7B a veces escribe 'Hay 9 productos para comprar,
+    críticos.' sin el número de críticos. Como el total y los críticos ya
+    están calculados en el contexto, se rellenan de forma determinista.
+    """
+    compras = contexto.get("recomendaciones_compra")
+    if not texto or not isinstance(compras, dict):
+        return texto
+    total = compras.get("total_productos_a_comprar")
+    criticos = compras.get("urgencia_critica")
+    if total is None or criticos is None:
+        return texto
+    # 'Hay 9 productos para comprar, críticos.' -> número ausente
+    texto = re.sub(
+        r"(Hay\s+)\d+(\s+productos para comprar,\s*)(\d+\s+)?críticos",
+        rf"\g<1>{total}\g<2>{criticos} críticos",
+        texto,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    return texto
+
+
 def _reparar_placeholders(texto: str, contexto: dict) -> str:
     """
     Sustituir placeholders de plantilla que el modelo local copia literalmente.
@@ -511,6 +598,9 @@ def _consultar_ollama(mensaje: str, contexto: dict, historial: list) -> str:
 
     # Un modelo pequeño imita mejor un ejemplo con datos reales que una plantilla
     # abstracta: se le muestra la forma exacta con el primer producto del negocio.
+    # El formato de compra SOLO se inyecta si el contexto incluye compras: si no,
+    # el modelo aplicaría la plantilla a preguntas ajenas (p. ej. stock muerto)
+    # y escribiría marcadores sin sustituir.
     ejemplo = ""
     compras = compacto.get("recomendaciones_compra")
     if isinstance(compras, dict) and compras.get("productos"):
@@ -520,6 +610,21 @@ def _consultar_ollama(mensaje: str, contexto: dict, historial: list) -> str:
             f"{primero.get('producto')}: comprar {primero.get('cantidad_sugerida')} unidades "
             f"({primero.get('urgencia')}), llega el {primero.get('llega_el')}."
         )
+        formato_compra = (
+            "FORMATO: primera línea con el total ('Hay N productos para comprar, M críticos.'); "
+            "después máximo 3 viñetas, una línea cada una, sin explicar cálculos. "
+            "Cada viñeta de compra se escribe así: NOMBRE DEL PRODUCTO: comprar N unidades (crítico), "
+            "llega el AAAA-MM-DD. Sustituye el nombre por el valor real del campo 'producto', la N por la "
+            "cantidad real, la palabra entre paréntesis por el valor real de 'urgencia' (crítico, medio o "
+            "bajo) y la fecha por la del campo 'llega_el'. "
+            "Nunca escribas los nombres de campo 'producto', 'cantidad_sugerida' ni 'urgencia' en la "
+            "respuesta, y nunca uses corchetes angulares: son etiquetas, no datos." + ejemplo
+        )
+    else:
+        formato_compra = (
+            "FORMATO: responde en máximo 3 viñetas cortas con los datos del contexto, "
+            "sin explicar cálculos ni usar corchetes angulares."
+        )
 
     instruccion = (
         "Eres el asistente de Inventario-IA. Respondes SIEMPRE en español, en lenguaje sencillo, "
@@ -527,14 +632,7 @@ def _consultar_ollama(mensaje: str, contexto: dict, historial: list) -> str:
         "REGLA ESTRICTA: usa ÚNICAMENTE los datos del CONTEXTO DE DATOS que se te entrega. "
         "No inventes números, no completes lo que falte, no uses conocimiento externo del negocio. "
         "Si el contexto no contiene el dato que te piden, dilo con claridad.\n"
-        "FORMATO: primera línea con el total ('Hay N productos para comprar, M críticos.'); "
-        "después máximo 3 viñetas, una línea cada una, sin explicar cálculos. "
-        "Cada viñeta de compra se escribe así: NOMBRE DEL PRODUCTO: comprar N unidades (crítico), "
-        "llega el AAAA-MM-DD. Sustituye el nombre por el valor real del campo 'producto', la N por la "
-        "cantidad real, la palabra entre paréntesis por el valor real de 'urgencia' (crítico, medio o "
-        "bajo) y la fecha por la del campo 'llega_el'. "
-        "Nunca escribas los nombres de campo 'producto', 'cantidad_sugerida' ni 'urgencia' en la "
-        "respuesta, y nunca uses corchetes angulares: son etiquetas, no datos." + ejemplo +
+        + formato_compra +
         " Responde directo, sin análisis previo."
     )
 
@@ -570,6 +668,7 @@ def _consultar_ollama(mensaje: str, contexto: dict, historial: list) -> str:
     respuesta = _recortar_linea_incompleta(
         datos.get("message", {}).get("content", "").strip(), truncado
     )
+    respuesta = _reparar_resumen_compra(respuesta, compacto)
     respuesta = _reparar_placeholders(respuesta, contexto)
     return _limitar_vinetas(respuesta)
 
