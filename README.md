@@ -34,13 +34,27 @@ npm install
 
 ## Arranque
 
+### Opción rápida (recomendada)
+
+```bash
+# Linux / macOS
+./start.sh
+
+# Windows
+start.bat
+```
+
+El script crea el entorno virtual (`backend/.venv`), instala dependencias si faltan, verifica Ollama/modelo y levanta la API (:8000) y el frontend (:5173). En Linux/macOS, `Ctrl+C` detiene ambos.
+
+### Opción manual
+
 Son **tres procesos** y deben coexistir:
 
 ```bash
 # 1) IA local
 ollama serve
 
-# 2) API (desde la raíz del proyecto)
+# 2) API (desde la raíz del proyecto, con el venv activado)
 python -m uvicorn backend.api.main:app --port 8000 --host 127.0.0.1
 
 # 3) Frontend
