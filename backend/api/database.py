@@ -41,6 +41,7 @@ def init_db():
             sku TEXT UNIQUE,
             nombre TEXT NOT NULL,
             categoria TEXT,
+            unidad TEXT,
             costo REAL DEFAULT 0,
             precio_venta REAL DEFAULT 0,
             stock_actual INTEGER DEFAULT 0,
@@ -56,6 +57,9 @@ def init_db():
     columnas = [c[1] for c in cursor.fetchall()]
     if "nombre_norm" not in columnas:
         cursor.execute("ALTER TABLE productos ADD COLUMN nombre_norm TEXT")
+    # RF-07: unidad de medida (kg, unidad, caja...) para el alta manual
+    if "unidad" not in columnas:
+        cursor.execute("ALTER TABLE productos ADD COLUMN unidad TEXT")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_productos_nombre_norm ON productos(nombre_norm)")
     
     # Tabla: ventas (historial de ventas importadas)

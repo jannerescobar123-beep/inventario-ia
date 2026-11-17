@@ -3,13 +3,14 @@ import re
 import tempfile
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel, Field
 
 try:  # Carga como paquete: python -m uvicorn backend.api.main:app --port 8000
-    from backend.api.database import get_db, init_db
+    from backend.api.database import get_db, init_db, normalizar_texto
     from backend.api.estadisticas import (
         alertas_comportamientos_inusuales,
         alertas_riesgo_agotamiento,
@@ -21,9 +22,9 @@ try:  # Carga como paquete: python -m uvicorn backend.api.main:app --port 8000
         generar_recomendaciones_compra,
         predecir_demanda_media_movil,
     )
-    from backend.api.importador import importar_archivo
+    from backend.api.importador import _generar_sku_unico, importar_archivo
 except ImportError:  # Ejecución directa: python backend/api/main.py
-    from database import get_db, init_db
+    from database import get_db, init_db, normalizar_texto
     from estadisticas import (
         alertas_comportamientos_inusuales,
         alertas_riesgo_agotamiento,
@@ -35,10 +36,34 @@ except ImportError:  # Ejecución directa: python backend/api/main.py
         generar_recomendaciones_compra,
         predecir_demanda_media_movil,
     )
-    from importador import importar_archivo
+    from importador import _generar_sku_unico, importar_archivo
 
 # Extensiones aceptadas por el endpoint de importación
 EXTENSIONES_SOPORTADAS = {".csv", ".xlsx", ".xls", ".xlsm"}
+
+
+# --- RF-07: alta y edición manual de productos -----------------------------
+
+class ProductoEntrada(BaseModel):
+    """Cuerpo de alta o edición de un producto (RF-07)."""
+
+    nombre: str = Field(min_length=1, max_length=200)
+    sku: Optional[str] = None
+    categoria: Optional[str] = None
+    unidad: Optional[str] = None
+    costo: float = Field(default=0, ge=0)
+    precio_venta: float = Field(default=0, ge=0)
+    stock_actual: int = Field(default=0, ge=0)
+    stock_minimo: int = Field(default=0, ge=0)
+
+
+def _leer_producto(cursor, producto_id: int) -> dict:
+    """Devolver un producto como diccionario; 404 si no existe."""
+    cursor.execute("SELECT * FROM productos WHERE id = ?", (producto_id,))
+    fila = cursor.fetchone()
+    if fila is None:
+        raise HTTPException(status_code=404, detail="Producto no encontrado")
+    return dict(fila)
 
 
 def _extraer_archivo_multipart(body: bytes, content_type: str) -> Tuple[str, bytes]:
@@ -191,6 +216,92 @@ def api_productos():
             "stock_actual": f[6],
             "stock_minimo": f[7]
         } for f in filas]
+    finally:
+        conn.close()
+
+@app.post("/api/productos", status_code=201)
+def api_crear_producto(datos: ProductoEntrada):
+    """
+    Alta manual de un producto (RF-07).
+
+    Si no se envía SKU se genera uno único a partir del nombre. Un SKU
+    repetido devuelve 409 en lugar de sobrescribir el producto existente.
+    """
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        nombre = datos.nombre.strip()
+        if not nombre:
+            raise HTTPException(status_code=400, detail="El nombre no puede estar vacío")
+
+        sku = (datos.sku or "").strip()
+        if sku:
+            cursor.execute("SELECT 1 FROM productos WHERE sku = ?", (sku,))
+            if cursor.fetchone() is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Ya existe un producto con el SKU {sku}",
+                )
+        else:
+            sku = _generar_sku_unico(cursor, nombre)
+
+        cursor.execute("""
+            INSERT INTO productos (sku, nombre, nombre_norm, categoria, unidad,
+                                   costo, precio_venta, stock_actual, stock_minimo)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            sku, nombre, normalizar_texto(nombre), datos.categoria, datos.unidad,
+            datos.costo, datos.precio_venta, datos.stock_actual, datos.stock_minimo,
+        ))
+        conn.commit()
+        return _leer_producto(cursor, cursor.lastrowid)
+    finally:
+        conn.close()
+
+@app.put("/api/productos/{producto_id}")
+def api_editar_producto(producto_id: int, datos: ProductoEntrada):
+    """
+    Editar un producto existente (RF-07).
+
+    Sustituye los campos editables. Si no se envía SKU se conserva el actual.
+    Devuelve 404 si el producto no existe y 409 si el SKU pertenece a otro.
+    """
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        _leer_producto(cursor, producto_id)
+
+        nombre = datos.nombre.strip()
+        if not nombre:
+            raise HTTPException(status_code=400, detail="El nombre no puede estar vacío")
+
+        sku = (datos.sku or "").strip() or None
+        if sku:
+            cursor.execute(
+                "SELECT 1 FROM productos WHERE sku = ? AND id <> ?",
+                (sku, producto_id),
+            )
+            if cursor.fetchone() is not None:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"Ya existe otro producto con el SKU {sku}",
+                )
+
+        cursor.execute("""
+            UPDATE productos SET
+                sku = COALESCE(?, sku),
+                nombre = ?, nombre_norm = ?,
+                categoria = ?, unidad = ?,
+                costo = ?, precio_venta = ?,
+                stock_actual = ?, stock_minimo = ?
+            WHERE id = ?
+        """, (
+            sku, nombre, normalizar_texto(nombre), datos.categoria, datos.unidad,
+            datos.costo, datos.precio_venta, datos.stock_actual, datos.stock_minimo,
+            producto_id,
+        ))
+        conn.commit()
+        return _leer_producto(cursor, producto_id)
     finally:
         conn.close()
 

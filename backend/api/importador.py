@@ -95,6 +95,7 @@ def importar_excel(ruta_archivo: Optional[str] = None,
         "productos_creados": 0,
         "productos_actualizados": 0,
         "total_ventas": 0,
+        "ventas_duplicadas_omitidas": 0,
         "errores": []
     }
     
@@ -113,11 +114,12 @@ def importar_excel(ruta_archivo: Optional[str] = None,
     if "ventas" in nombres_hojas:
         df_ventas = _normalizar_columnas(pd.read_excel(xl, sheet_name="ventas"))
         if not df_ventas.empty:
-            total_registros, errores, ids_creados_ventas, ids_actualizados_ventas = \
+            total_registros, errores, ids_creados_ventas, ids_actualizados_ventas, duplicadas = \
                 _validar_y_guardar_ventas(df_ventas)
             ids_creados |= ids_creados_ventas
             ids_actualizados |= ids_actualizados_ventas
             resultado["total_ventas"] = total_registros
+            resultado["ventas_duplicadas_omitidas"] = duplicadas
             resultado["errores"] = errores
     
     # Contadores sin duplicados: un producto creado no cuenta como actualizado
@@ -153,14 +155,16 @@ def importar_csv(ruta_archivo: Optional[str] = None,
         "productos_creados": 0,
         "productos_actualizados": 0,
         "total_ventas": 0,
+        "ventas_duplicadas_omitidas": 0,
         "errores": []
     }
     
     df_ventas = _normalizar_columnas(pd.read_csv(ruta))
     if not df_ventas.empty:
-        total_registros, errores, ids_creados, ids_actualizados = \
+        total_registros, errores, ids_creados, ids_actualizados, duplicadas = \
             _validar_y_guardar_ventas(df_ventas)
         resultado["total_ventas"] = total_registros
+        resultado["ventas_duplicadas_omitidas"] = duplicadas
         resultado["errores"] = errores
         resultado["productos_creados"] = len(ids_creados)
         resultado["productos_actualizados"] = len(ids_actualizados - ids_creados)
@@ -263,101 +267,169 @@ def _procesar_productos(df: pd.DataFrame) -> Tuple[int, int, Set[int], Set[int]]
     return creado, actualizado, ids_creados, ids_actualizados
 
 
-def _validar_y_guardar_ventas(df: pd.DataFrame) -> Tuple[int, list, Set[int], Set[int]]:
+def _clave_venta(fecha: str, producto_norm: str, cantidad: int,
+                 precio: float) -> Tuple[str, str, int, float]:
+    """Clave natural de una venta, para detectar duplicados (RF-05)."""
+    return (fecha, producto_norm, int(cantidad), round(float(precio), 2))
+
+
+def _contar_ventas_existentes(cursor, fechas) -> Dict[Tuple, int]:
     """
-    Validar datos de ventas y guardarlos en la BD.
+    Contar las ventas ya guardadas para el rango de fechas del archivo.
+
+    Se agrupa por la misma clave que usa la deduplicación para poder comparar
+    el archivo contra la BD como multiconjuntos (RF-05).
+    """
+    fechas = [f for f in fechas if f]
+    if not fechas:
+        return {}
+
+    cursor.execute("""
+        SELECT fecha, producto_norm, cantidad, ROUND(precio, 2), COUNT(*)
+        FROM ventas
+        WHERE fecha BETWEEN ? AND ?
+        GROUP BY fecha, producto_norm, cantidad, ROUND(precio, 2)
+    """, (min(fechas), max(fechas)))
+
+    return {
+        _clave_venta(fila[0], fila[1], fila[2], fila[3]): int(fila[4])
+        for fila in cursor.fetchall()
+    }
+
+
+def _validar_y_guardar_ventas(df: pd.DataFrame) -> Tuple[int, list, Set[int], Set[int], int]:
+    """
+    Validar los datos de ventas y guardarlos sin duplicar lo ya importado.
+
+    RF-05: la importación es incremental. La deduplicación se hace por
+    multiconjunto: si la BD ya contiene N filas idénticas (misma fecha,
+    producto normalizado, cantidad y precio), solo se guardan las que el
+    archivo aporta por encima de N.
+
+    - Reimportar el mismo archivo no inserta ninguna venta nueva.
+    - Dos ventas legítimas idénticas dentro de un archivo nuevo sí se guardan.
 
     Cada fila válida se persiste en la tabla 'ventas' con la fecha normalizada
-    a ISO 'YYYY-MM-DD'. Retorna (ventas guardadas, errores, ids_creados,
-    ids_actualizados) de los productos afectados.
+    a ISO 'YYYY-MM-DD'.
+
+    Retorna (ventas guardadas, errores, ids_creados, ids_actualizados,
+    duplicadas_omitidas) de los productos afectados.
     """
     conn = _conectar()
     cursor = conn.cursor()
-    
+
     requeridas = {"fecha", "producto", "cantidad", "precio"}
     errores = []
+    pendientes = []
     total_registros = 0
+    duplicadas_omitidas = 0
     ids_creados: Set[int] = set()
     ids_actualizados: Set[int] = set()
-    
+
+    # 1. Validar todas las filas antes de escribir nada
     for _, row in df.iterrows():
-        # Validar columnas requeridas
         fila_errores = []
         for col in requeridas:
             if col not in df.columns or pd.isna(row.get(col)):
                 fila_errores.append(f"Falta columna '{col}'")
-        
+
         if fila_errores:
             errores.append({
                 "fila": _numero_fila_df(df, _),
                 "motivos": fila_errores
             })
             continue
-        
+
         try:
             fecha = _normalizar_fecha(row["fecha"])
             producto_nombre = str(row["producto"]).strip()
             cantidad = int(row["cantidad"])
             precio = float(row["precio"])
-            
+
             if not producto_nombre:
                 raise ValueError("Nombre de producto vacío")
             if cantidad <= 0:
                 raise ValueError("Cantidad debe ser positiva")
             if precio < 0:
                 raise ValueError("Precio no puede ser negativo")
-            
-            # Buscar producto por nombre normalizado (columna nombre_norm:
-            # sin tildes y en mayúsculas, calculado en Python)
-            nombre_norm = normalizar_nombre(producto_nombre)
-            cursor.execute(
-                "SELECT id, nombre, stock_actual, precio_venta FROM productos WHERE nombre_norm = ?",
-                (nombre_norm,),
-            )
-            prod = cursor.fetchone()
-            
-            if prod:
-                prod_id, nombre_catalogo, stock_actual, precio_venta_base = prod
-                # El stock del producto es el conteo físico actual
-                # (ADR-003: NO se descuentan ventas históricas en esta fase)
-                
-                # Actualizar precio si es diferente
-                if precio != precio_venta_base:
-                    cursor.execute("UPDATE productos SET precio_venta = ? WHERE id = ?", (precio, prod_id))
-                    ids_actualizados.add(prod_id)
-                
-                nombre_venta = nombre_catalogo
-            else:
-                # Crear producto nuevo automáticamente (RF-07)
-                sku = _generar_sku_unico(cursor, producto_nombre)
-                cursor.execute("""
-                    INSERT INTO productos (sku, nombre, nombre_norm, costo, precio_venta, stock_actual)
-                    VALUES (?, ?, ?, ?, ?, ?)
-                """, (sku, producto_nombre, nombre_norm, precio * 0.8, precio, 0))  # costo = 80% del precio
-                nombre_venta = producto_nombre
-                ids_creados.add(cursor.lastrowid)
-            
-            # Persistir la venta (las ventas no se pierden: se guardan en la tabla 'ventas')
-            cursor.execute("""
-                INSERT INTO ventas (fecha, producto, producto_norm, cantidad, precio)
-                VALUES (?, ?, ?, ?, ?)
-            """, (fecha, nombre_venta, nombre_norm, cantidad, precio))
-            
-            total_registros += 1
+
+            pendientes.append({
+                "fila": _numero_fila_df(df, _),
+                "fecha": fecha,
+                "producto": producto_nombre,
+                "cantidad": cantidad,
+                "precio": precio,
+            })
         except (ValueError, TypeError) as e:
             errores.append({
                 "fila": _numero_fila_df(df, _),
                 "motivo": str(e)
             })
-    
+
+    # 2. Comparar contra lo ya guardado y escribir solo lo que falta
+    existentes = _contar_ventas_existentes(cursor, [p["fecha"] for p in pendientes])
+    vistos: Dict[Tuple, int] = {}
+
+    for pendiente in pendientes:
+        producto_nombre = pendiente["producto"]
+        fecha = pendiente["fecha"]
+        cantidad = pendiente["cantidad"]
+        precio = pendiente["precio"]
+        nombre_norm = normalizar_nombre(producto_nombre)
+
+        clave = _clave_venta(fecha, nombre_norm, cantidad, precio)
+        vistos[clave] = vistos.get(clave, 0) + 1
+
+        # Ya existe esa misma fila en la BD: no se duplica (RF-05)
+        if vistos[clave] <= existentes.get(clave, 0):
+            duplicadas_omitidas += 1
+            continue
+
+        # Buscar producto por nombre normalizado (columna nombre_norm:
+        # sin tildes y en mayúsculas, calculado en Python)
+        cursor.execute(
+            "SELECT id, nombre, stock_actual, precio_venta FROM productos WHERE nombre_norm = ?",
+            (nombre_norm,),
+        )
+        prod = cursor.fetchone()
+
+        if prod:
+            prod_id, nombre_catalogo, stock_actual, precio_venta_base = prod
+            # El stock del producto es el conteo físico actual
+            # (ADR-003: NO se descuentan ventas históricas en esta fase)
+
+            # Actualizar precio si es diferente
+            if precio != precio_venta_base:
+                cursor.execute("UPDATE productos SET precio_venta = ? WHERE id = ?", (precio, prod_id))
+                ids_actualizados.add(prod_id)
+
+            nombre_venta = nombre_catalogo
+        else:
+            # Crear producto nuevo automáticamente (RF-07)
+            sku = _generar_sku_unico(cursor, producto_nombre)
+            cursor.execute("""
+                INSERT INTO productos (sku, nombre, nombre_norm, costo, precio_venta, stock_actual)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (sku, producto_nombre, nombre_norm, precio * 0.8, precio, 0))  # costo = 80% del precio
+            nombre_venta = producto_nombre
+            ids_creados.add(cursor.lastrowid)
+
+        # Persistir la venta (las ventas no se pierden: se guardan en la tabla 'ventas')
+        cursor.execute("""
+            INSERT INTO ventas (fecha, producto, producto_norm, cantidad, precio)
+            VALUES (?, ?, ?, ?, ?)
+        """, (fecha, nombre_venta, nombre_norm, cantidad, precio))
+
+        total_registros += 1
+
     # Actualizar KPIs simplificados
     if total_registros > 0:
         _actualizar_kpis(cursor, total_registros)
-    
+
     conn.commit()
     conn.close()
-    
-    return total_registros, errores, ids_creados, ids_actualizados
+
+    return total_registros, errores, ids_creados, ids_actualizados, duplicadas_omitidas
 
 
 def _generar_sku_unico(cursor, nombre: str) -> str:

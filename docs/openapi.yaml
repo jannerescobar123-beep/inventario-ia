@@ -74,6 +74,56 @@ paths:
               schema:
                 type: array
                 items: { $ref: '#/components/schemas/Producto' }
+    post:
+      tags: [Productos]
+      summary: Alta manual de un producto (RF-07)
+      description: >
+        Si no se envía 'sku' se genera uno único a partir del nombre. Un SKU
+        repetido devuelve 409 en lugar de sobrescribir el producto existente.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductoEntrada' }
+      responses:
+        '201':
+          description: Producto creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+        '409':
+          description: Ya existe un producto con ese SKU
+        '422':
+          description: Cuerpo inválido (nombre vacío, precio o stock negativos)
+  /api/productos/{producto_id}:
+    put:
+      tags: [Productos]
+      summary: Edición manual de un producto (RF-07)
+      description: >
+        Sustituye los campos editables. Si no se envía 'sku' se conserva el
+        actual; un SKU que pertenezca a otro producto devuelve 409.
+      parameters:
+        - name: producto_id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProductoEntrada' }
+      responses:
+        '200':
+          description: Producto actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+        '404':
+          description: Producto no encontrado
+        '409':
+          description: El SKU pertenece a otro producto
+        '422':
+          description: Cuerpo inválido (nombre vacío, precio o stock negativos)
   /api/kpis:
     get:
       tags: [Análisis]
@@ -200,6 +250,7 @@ components:
         sku: { type: string, nullable: true }
         nombre: { type: string }
         categoria: { type: string, nullable: true }
+        unidad: { type: string, nullable: true, description: 'Unidad de medida (kg, unidad, caja...) — RF-07' }
         costo: { type: number, nullable: true }
         precio_venta: { type: number, nullable: true }
         stock_actual: { type: number }
@@ -349,6 +400,7 @@ components:
         total_ventas: { type: integer, description: Ventas importadas }
         productos_creados: { type: integer, description: 'Productos creados desde la hoja "productos" o desde las ventas' }
         productos_actualizados: { type: integer, description: 'Productos actualizados desde la hoja "productos"' }
+        ventas_duplicadas_omitidas: { type: integer, description: 'Ventas ya presentes en la BD que no se volvieron a insertar (RF-05)' }
         errores:
           type: array
           items: { type: string }
@@ -374,3 +426,16 @@ components:
           description: Datos reales usados como contexto (KPIs, recomendaciones, alertas)
         contexto: { type: object }
         modelo: { type: string, nullable: true, example: 'qwen3:1.7b', description: 'null si Ollama no respondió' }
+    ProductoEntrada:
+      type: object
+      description: Cuerpo de alta o edición manual de un producto (RF-07)
+      properties:
+        nombre: { type: string, minLength: 1, maxLength: 200 }
+        sku: { type: string, nullable: true, description: 'Si se omite en el alta se genera uno único' }
+        categoria: { type: string, nullable: true }
+        unidad: { type: string, nullable: true }
+        costo: { type: number, minimum: 0, default: 0 }
+        precio_venta: { type: number, minimum: 0, default: 0 }
+        stock_actual: { type: integer, minimum: 0, default: 0 }
+        stock_minimo: { type: integer, minimum: 0, default: 0 }
+      required: [nombre]

@@ -256,12 +256,25 @@ def test_reparar_resumen_compra_sin_compras_no_toca_nada():
 
 def test_openapi_sincronizado_con_rutas():
     """Las 13 rutas del contrato deben existir en la app (ADR-004)."""
-    import yaml
+    try:
+        import yaml
+    except ModuleNotFoundError:
+        # PyYAML no publica wheel para Python 3.15 y compilarlo exige MSVC:
+        # se usa una lectura mínima de las claves de `paths` en vez del parser.
+        yaml = None
 
     from backend.api.main import app
 
-    contrato = yaml.safe_load((RAIZ / "docs" / "openapi.yaml").read_text())
-    rutas_contrato = set(contrato["paths"])
+    fichero_contrato = RAIZ / "docs" / "openapi.yaml"
+    if yaml is not None:
+        contrato = yaml.safe_load(fichero_contrato.read_text())
+        rutas_contrato = set(contrato["paths"])
+    else:
+        rutas_contrato = {
+            linea.strip()[:-1]
+            for linea in fichero_contrato.read_text(encoding="utf-8").splitlines()
+            if linea.startswith("  /") and linea.rstrip().endswith(":")
+        }
     rutas_app = {r.path for r in app.routes if hasattr(r, "path")}
     faltan = rutas_contrato - rutas_app
     assert not faltan, f"Rutas en el contrato sin implementar: {faltan}"
