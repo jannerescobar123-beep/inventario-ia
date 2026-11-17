@@ -610,6 +610,7 @@ def generar_recomendaciones_compra(conn, stock_minimo: int = None,
         fecha_sugerida = (hoy + timedelta(days=dias_hasta_reorden)).strftime("%Y-%m-%d")
         fecha_entrega = (hoy + timedelta(days=dias_hasta_reorden + lead_time_dias)).strftime("%Y-%m-%d")
 
+        costo_unitario = round(costo or 0, 2)
         recomendaciones.append({
             "producto_id": prod_id,
             "producto": nombre,
@@ -626,6 +627,10 @@ def generar_recomendaciones_compra(conn, stock_minimo: int = None,
             "fecha_sugerida": fecha_sugerida,
             "fecha_entrega_estimada": fecha_entrega,
             "valor_inventario": round(valor or 0, 2),
+            # RF-27: el coste ya está en el catálogo; se expone para que la
+            # orden de compra sepa cuánto dinero va a comprometer.
+            "costo_unitario": costo_unitario,
+            "costo_total_estimado": round(costo_unitario * cantidad_sugerida, 2),
             "lead_time_dias": lead_time_dias
         })
 

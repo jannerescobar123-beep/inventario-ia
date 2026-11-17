@@ -507,6 +507,16 @@ a:hover { color: var(--bs-link-hover-color); }
 .urg-bajo    { color: var(--text-2); border-color: var(--border); background: transparent; }
 
 /* ---------- 7. Controles ---------- */
+/* Acciones de la orden de compra (RF-27): los botones van en una fila junto
+   al contador de productos y se comportan como botones, no como enlaces. */
+.acciones-orden {
+  display: flex;
+  align-items: center;
+  gap: .5rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+a.btn { text-decoration: none; }
 .btn {
   display: inline-flex;
   align-items: center;

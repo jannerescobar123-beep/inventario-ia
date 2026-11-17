@@ -176,6 +176,51 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Recomendaciones' }
+  /api/ordenes-compra:
+    get:
+      tags: [Análisis]
+      summary: Orden de compra en JSON (RF-27)
+      description: >
+        Los mismos datos que /api/recomendaciones con forma de pedido: cabecera
+        fechada, líneas numeradas y totales.
+      parameters:
+        - { in: query, name: lead_time, schema: { type: integer, default: 7 }, description: Días de entrega del proveedor }
+      responses:
+        '200':
+          description: Orden de compra
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/OrdenCompra' }
+  /api/ordenes-compra.csv:
+    get:
+      tags: [Análisis]
+      summary: Orden de compra en CSV para Excel (RF-27)
+      description: >
+        UTF-8 con BOM y separador ';': Excel en español abre el archivo con las
+        columnas separadas y las tildes correctas.
+      parameters:
+        - { in: query, name: lead_time, schema: { type: integer, default: 7 }, description: Días de entrega del proveedor }
+      responses:
+        '200':
+          description: Archivo CSV (se descarga)
+          content:
+            text/csv:
+              schema: { type: string }
+  /api/ordenes-compra.html:
+    get:
+      tags: [Análisis]
+      summary: Orden de compra imprimible (RF-27)
+      description: >
+        Documento A4 con CSS de impresión: «Imprimir» produce el PDF desde el
+        navegador, sin dependencias ni conexión.
+      parameters:
+        - { in: query, name: lead_time, schema: { type: integer, default: 7 }, description: Días de entrega del proveedor }
+      responses:
+        '200':
+          description: Documento HTML listo para imprimir
+          content:
+            text/html:
+              schema: { type: string }
   /api/abc:
     get:
       tags: [Análisis]
@@ -384,7 +429,38 @@ components:
         fecha_sugerida: { type: string, format: date }
         fecha_entrega_estimada: { type: string, format: date }
         valor_inventario: { type: number }
+        costo_unitario: { type: number, description: 'Coste de compra por unidad, tomado del catálogo (RF-27)' }
+        costo_total_estimado: { type: number, description: 'costo_unitario x cantidad_sugerida (RF-27)' }
         lead_time_dias: { type: integer }
+    OrdenCompra:
+      type: object
+      description: Orden de compra (RF-27)
+      properties:
+        titulo: { type: string, example: 'Orden de compra' }
+        fecha_emision: { type: string, format: date }
+        lead_time_dias: { type: integer, description: 'Días de entrega asumidos al calcular la orden' }
+        fecha_referencia_demanda: { type: string, nullable: true, format: date }
+        lineas:
+          type: array
+          items:
+            type: object
+            properties:
+              num: { type: integer }
+              producto: { type: string }
+              cantidad: { type: integer }
+              urgencia: { type: string, enum: [crítico, medio, bajo] }
+              fecha_sugerida: { type: string, format: date }
+              fecha_entrega_estimada: { type: string, format: date }
+              stock_actual: { type: integer }
+              punto_reorden: { type: integer }
+              costo_unitario: { type: number }
+              costo_total_estimado: { type: number }
+        totales:
+          type: object
+          properties:
+            productos: { type: integer }
+            unidades: { type: integer }
+            costo_total_estimado: { type: number }
     ABC:
       type: object
       properties:

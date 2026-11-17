@@ -94,7 +94,26 @@ const RecomendacionesCompras = () => {
 
       <div className="section-head">
         <h2 className="section-title">Lista de compra sugerida</h2>
-        <span className="count-chip">{recomendaciones.length} producto(s)</span>
+        <div className="acciones-orden">
+          <span className="count-chip">{recomendaciones.length} producto(s)</span>
+          <a
+            className="btn btn-soft"
+            href={api.urlOrdenCompraCSV()}
+            download
+            title="Archivo CSV para Excel (se descarga)"
+          >
+            Descargar CSV
+          </a>
+          <a
+            className="btn btn-ghost"
+            href={api.urlOrdenCompraHTML()}
+            target="_blank"
+            rel="noreferrer"
+            title="Se abre en otra pestaña para imprimir o guardar como PDF"
+          >
+            Imprimir / PDF
+          </a>
+        </div>
       </div>
 
       {recomendaciones.length === 0 ? (

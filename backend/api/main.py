@@ -7,6 +7,7 @@ from typing import Optional, Tuple
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel, Field
 
 try:  # Carga como paquete: python -m uvicorn backend.api.main:app --port 8000
@@ -26,6 +27,11 @@ try:  # Carga como paquete: python -m uvicorn backend.api.main:app --port 8000
         predecir_demanda_media_movil,
     )
     from backend.api.importador import _generar_sku_unico, importar_archivo
+    from backend.api.ordenes_compra import (
+        generar_orden_compra,
+        orden_a_csv,
+        orden_a_html,
+    )
 except ImportError:  # Ejecución directa: python backend/api/main.py
     from database import get_db, init_db, normalizar_texto
     from estadisticas import (
@@ -43,6 +49,11 @@ except ImportError:  # Ejecución directa: python backend/api/main.py
         predecir_demanda_media_movil,
     )
     from importador import _generar_sku_unico, importar_archivo
+    from ordenes_compra import (
+        generar_orden_compra,
+        orden_a_csv,
+        orden_a_html,
+    )
 
 # Extensiones aceptadas por el endpoint de importación
 EXTENSIONES_SOPORTADAS = {".csv", ".xlsx", ".xls", ".xlsm"}
@@ -515,6 +526,64 @@ def api_recomendaciones(lead_time: int = 7):
         return generar_recomendaciones_compra(conn, lead_time_dias=max(1, int(lead_time)))
     finally:
         conn.close()
+
+@app.get("/api/ordenes-compra")
+def api_orden_compra(lead_time: int = 7):
+    """
+    Orden de compra en JSON (RF-27).
+
+    Mismos datos que /api/recomendaciones, pero con forma de pedido: cabecera
+    fechada, líneas numeradas y totales.
+    """
+    conn = get_db()
+    try:
+        return generar_orden_compra(conn, lead_time_dias=max(1, int(lead_time)))
+    finally:
+        conn.close()
+
+@app.get("/api/ordenes-compra.csv")
+def api_orden_compra_csv(lead_time: int = 7):
+    """
+    Orden de compra en CSV (RF-27), lista para Excel.
+
+    UTF-8 con BOM y separador ';': Excel en español abre el archivo con las
+    columnas separadas y las tildes correctas.
+    """
+    conn = get_db()
+    try:
+        orden = generar_orden_compra(conn, lead_time_dias=max(1, int(lead_time)))
+    finally:
+        conn.close()
+
+    return Response(
+        content=orden_a_csv(orden),
+        media_type="text/csv; charset=utf-8",
+        headers={
+            "Content-Disposition": f'attachment; filename="orden-compra-{orden["fecha_emision"]}.csv"'
+        },
+    )
+
+@app.get("/api/ordenes-compra.html")
+def api_orden_compra_html(lead_time: int = 7):
+    """
+    Orden de compra como documento imprimible (RF-27).
+
+    El navegador la muestra con su CSS de impresión: «Imprimir» produce el PDF
+    sin dependencias ni conexión.
+    """
+    conn = get_db()
+    try:
+        orden = generar_orden_compra(conn, lead_time_dias=max(1, int(lead_time)))
+    finally:
+        conn.close()
+
+    return Response(
+        content=orden_a_html(orden),
+        media_type="text/html; charset=utf-8",
+        headers={
+            "Content-Disposition": f'inline; filename="orden-compra-{orden["fecha_emision"]}.html"'
+        },
+    )
 
 @app.get("/api/predicciones/{producto_id}")
 def api_predicciones(producto_id: int):
