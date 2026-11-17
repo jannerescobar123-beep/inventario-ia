@@ -4,8 +4,69 @@ from typing import Dict, List, Any, Optional
 from pathlib import Path
 import json
 
+try:  # Carga como paquete: python -m uvicorn backend.api.main:app
+    from backend.api.database import normalizar_texto
+except ImportError:  # Ejecución directa del módulo (backend/api)
+    from database import normalizar_texto
+
 BASE_DIR = Path(__file__).parent.parent  # backend/
 DB_PATH = BASE_DIR / "datos" / "inventario.db"
+
+# Valores de fábrica de los umbrales de alerta (RF-30).
+# Son los mismos números que estaban duros en el código antes de ser
+# configurables: si nadie configura nada, todo se comporta igual que antes.
+UMBRAL_MARGEN_POR_DEFECTO = 1.5        # stock_actual <= stock_minimo * margen
+UMBRAL_DIAS_INMINENTE_POR_DEFECTO = 7  # dias para agotar <= dias -> inminente
+
+
+def _umbrales_resueltos(conn) -> Dict[int, Dict[str, float]]:
+    """
+    Resolver el umbral efectivo de cada producto (RF-30).
+
+    Prioridad: el del producto, si no el de su categoría, si no el de fábrica.
+    El primer valor no nulo gana, así que la prioridad queda escrita en el
+    orden de las comprobaciones.
+
+    La categoría se compara con `normalizar_texto` (sin tildes y en
+    mayúsculas), igual que el emparejamiento de productos y ventas de ADR-003:
+    si el catálogo dice 'Ferretería' y el dueño escribe 'Ferreteria', la
+    configuración debe aplicarse igual. Por eso el emparejamiento se hace en
+    Python y no con LOWER() en SQL, que en SQLite no quita las tildes.
+    """
+    cursor = conn.cursor()
+
+    cursor.execute(
+        "SELECT categoria, dias_alerta_inminente, margen_alerta FROM umbrales_categoria"
+    )
+    por_categoria: Dict[str, Dict[str, Optional[float]]] = {}
+    for categoria, dias, margen in cursor.fetchall():
+        clave = normalizar_texto(categoria)
+        if not clave:
+            continue
+        actual = por_categoria.get(clave)
+        # Si la categoría ya estaba, gana el valor propio que no sea nulo.
+        if actual is None or (dias is not None and actual["dias"] is None):
+            por_categoria[clave] = {"dias": dias, "margen": margen}
+
+    cursor.execute(
+        "SELECT id, categoria, margen_alerta, dias_alerta_inminente FROM productos"
+    )
+    resueltos: Dict[int, Dict[str, float]] = {}
+    for prod_id, categoria, margen_producto, dias_producto in cursor.fetchall():
+        umbrales_cat = por_categoria.get(normalizar_texto(categoria), {})
+        dias_cat = umbrales_cat.get("dias")
+        margen_cat = umbrales_cat.get("margen")
+
+        margen = margen_producto
+        if margen is None:
+            margen = margen_cat if margen_cat is not None else UMBRAL_MARGEN_POR_DEFECTO
+        dias = dias_producto
+        if dias is None:
+            dias = dias_cat if dias_cat is not None else UMBRAL_DIAS_INMINENTE_POR_DEFECTO
+
+        resueltos[prod_id] = {"margen": float(margen), "dias_inminente": int(dias)}
+
+    return resueltos
 
 
 def _a_datetime(valor: Any) -> Optional[datetime]:
@@ -454,34 +515,44 @@ def generar_recomendaciones_compra(conn, stock_minimo: int = None,
     fila_anchor = cursor.fetchone()
     anchor = fila_anchor[0] if fila_anchor and fila_anchor[0] else hoy.strftime("%Y-%m-%d")
 
+    # RF-30: márgenes resueltos (producto > categoría > fábrica)
+    umbrales = _umbrales_resueltos(conn)
+
     if stock_minimo is not None:
         # Umbral global indicado por el llamador
         cursor.execute("""
             SELECT p.id, p.nombre, p.nombre_norm, p.stock_actual, p.stock_minimo,
                    p.precio_venta, p.costo,
-                   (p.stock_actual * p.precio_venta) AS valor
+                   (p.stock_actual * p.precio_venta) AS valor, p.stock_maximo
             FROM productos p
             WHERE p.stock_actual <= ?
             ORDER BY p.stock_actual ASC
         """, (stock_minimo,))
+        filas = cursor.fetchall()
     else:
         # Sin umbral global: se usa el stock mínimo de cada producto
-        # (columna productos.stock_minimo, ADR-003).
+        # (columna productos.stock_minimo, ADR-003) y su margen de alerta.
         cursor.execute("""
             SELECT p.id, p.nombre, p.nombre_norm, p.stock_actual, p.stock_minimo,
                    p.precio_venta, p.costo,
-                   (p.stock_actual * p.precio_venta) AS valor
+                   (p.stock_actual * p.precio_venta) AS valor, p.stock_maximo
             FROM productos p
-            WHERE (p.stock_minimo > 0 AND p.stock_actual <= p.stock_minimo * 1.5)
+            WHERE p.stock_minimo > 0
                OR (p.stock_minimo = 0 AND p.stock_actual = 0)
             ORDER BY p.stock_actual ASC
         """)
+        filas = [
+            fila for fila in cursor.fetchall()
+            if not (fila[4] > 0) or fila[3] <= fila[4] * umbrales.get(
+                fila[0], {}
+            ).get("margen", UMBRAL_MARGEN_POR_DEFECTO)
+        ]
 
-    filas = cursor.fetchall()
     recomendaciones = []
 
     for fila in filas:
-        prod_id, nombre, nombre_norm, stock_actual, stock_minimo_producto, precio_venta, costo, valor = fila
+        (prod_id, nombre, nombre_norm, stock_actual, stock_minimo_producto,
+         precio_venta, costo, valor, stock_maximo_producto) = fila
 
         # Objetivo de reposición: el mínimo del producto (o el global si se indicó)
         minimo_objetivo = stock_minimo if stock_minimo is not None else (stock_minimo_producto or 0)
@@ -510,8 +581,11 @@ def generar_recomendaciones_compra(conn, stock_minimo: int = None,
         cantidad_sugerida = int(round(
             minimo_objetivo - stock_actual + demanda_lead_time + stock_seguridad
         ))
-        if stock_maximo is not None:
-            cantidad_sugerida = min(cantidad_sugerida, max(0, stock_maximo - stock_actual))
+        # RF-42: el máximo del producto manda; si no lo tiene, se usa el
+        # global que pase el llamador. Sin ninguno de los dos, no hay techo.
+        maximo_objetivo = stock_maximo_producto if stock_maximo_producto else stock_maximo
+        if maximo_objetivo:
+            cantidad_sugerida = min(cantidad_sugerida, max(0, maximo_objetivo - stock_actual))
         cantidad_sugerida = max(0, cantidad_sugerida)
 
         if cantidad_sugerida == 0:
@@ -575,7 +649,10 @@ def generar_recomendaciones_compra(conn, stock_minimo: int = None,
 def alertas_riesgo_agotamiento(conn) -> List[Dict[str, Any]]:
     """
     Alertar sobre productos con riesgo de agotarse pronto (RF-28).
-    Productos donde stock_actual <= stock_minimo * 1.5 (50% de margen)
+
+    Un producto entra si `stock_actual <= stock_minimo * margen`, con el margen
+    resuelto por producto → categoría → fábrica (RF-30). Por defecto ese margen
+    es 1,5, así que sin configurar nada el resultado es el de siempre.
     """
     cursor = conn.cursor()
 
@@ -585,18 +662,30 @@ def alertas_riesgo_agotamiento(conn) -> List[Dict[str, Any]]:
     fila_anchor = cursor.fetchone()
     anchor = fila_anchor[0] if fila_anchor and fila_anchor[0] else datetime.now().strftime("%Y-%m-%d")
 
+    # RF-30: el margen ya no es el 1,5 fijo; cada producto usa el suyo, el de
+    # su categoría o el de fábrica, en ese orden.
+    umbrales = _umbrales_resueltos(conn)
+
     cursor.execute("""
         SELECT id, nombre, nombre_norm, stock_actual, stock_minimo, costo, precio_venta
         FROM productos
-        WHERE stock_minimo > 0 AND stock_actual <= stock_minimo * 1.5
+        WHERE stock_minimo > 0
         ORDER BY (stock_minimo - stock_actual) ASC
     """)
 
-    filas = cursor.fetchall()
+    filas = [
+        fila for fila in cursor.fetchall()
+        if fila[3] <= fila[4] * umbrales.get(
+            fila[0], {}
+        ).get("margen", UMBRAL_MARGEN_POR_DEFECTO)
+    ]
     alertas = []
 
     for fila in filas:
         prod_id, nombre, nombre_norm, stock_actual, stock_minimo, costo, precio_venta = fila
+        umbral = umbrales.get(prod_id, {})
+        margen = umbral.get("margen", UMBRAL_MARGEN_POR_DEFECTO)
+        dias_inminente = umbral.get("dias_inminente", UMBRAL_DIAS_INMINENTE_POR_DEFECTO)
         dias_para_agotar = None
         if stock_actual > 0:
             # Basado en velocidad de venta reciente (emparejamiento por nombre_norm)
@@ -621,14 +710,48 @@ def alertas_riesgo_agotamiento(conn) -> List[Dict[str, Any]]:
             "producto": nombre,
             "stock_actual": stock_actual,
             "stock_minimo": stock_minimo,
-            "riesgo": "agotamiento_inminente" if dias_para_agotar is not None and dias_para_agotar <= 7 else "agotamiento_pronto",
+            "riesgo": "agotamiento_inminente" if dias_para_agotar is not None and dias_para_agotar <= dias_inminente else "agotamiento_pronto",
             "dias_estimados": dias_para_agotar,
+            "umbral_margen": margen,
+            "umbral_dias": dias_inminente,
             "valor_inventario": round((stock_actual * precio_venta) if precio_venta else 0, 2)
         })
 
     # Ordenar por urgencia (los que se agotan antes primero)
     alertas.sort(key=lambda x: x["dias_estimados"] if x["dias_estimados"] is not None else 99)
 
+    return alertas
+
+
+def alertas_exceso_stock(conn) -> List[Dict[str, Any]]:
+    """
+    Productos por encima de su stock máximo (RF-42).
+
+    Solo entran los productos que tienen stock_maximo definido: sin máximo no
+    hay exceso posible. El capital inmovilizado valora las unidades que sobran
+    al precio de venta, para que se vea cuánto dinero está parado de más.
+    """
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT id, nombre, stock_actual, stock_maximo, precio_venta
+        FROM productos
+        WHERE stock_maximo IS NOT NULL
+          AND stock_maximo > 0
+          AND stock_actual > stock_maximo
+        ORDER BY (stock_actual - stock_maximo) DESC
+    """)
+
+    alertas = []
+    for prod_id, nombre, stock_actual, stock_maximo, precio_venta in cursor.fetchall():
+        exceso = stock_actual - stock_maximo
+        alertas.append({
+            "producto_id": prod_id,
+            "producto": nombre,
+            "stock_actual": stock_actual,
+            "stock_maximo": stock_maximo,
+            "exceso_unidades": exceso,
+            "capital_inmovilizado": round(exceso * (precio_venta or 0), 2),
+        })
     return alertas
 
 

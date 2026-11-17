@@ -46,6 +46,9 @@ def init_db():
             precio_venta REAL DEFAULT 0,
             stock_actual INTEGER DEFAULT 0,
             stock_minimo INTEGER DEFAULT 0,
+            stock_maximo INTEGER,
+            dias_alerta_inminente INTEGER,
+            margen_alerta REAL,
             fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     """)
@@ -60,7 +63,29 @@ def init_db():
     # RF-07: unidad de medida (kg, unidad, caja...) para el alta manual
     if "unidad" not in columnas:
         cursor.execute("ALTER TABLE productos ADD COLUMN unidad TEXT")
+    # RF-42: stock máximo por producto (NULL = sin máximo)
+    if "stock_maximo" not in columnas:
+        cursor.execute("ALTER TABLE productos ADD COLUMN stock_maximo INTEGER")
+    # RF-30: umbrales propios del producto (NULL = hereda de su categoría)
+    if "dias_alerta_inminente" not in columnas:
+        cursor.execute("ALTER TABLE productos ADD COLUMN dias_alerta_inminente INTEGER")
+    if "margen_alerta" not in columnas:
+        cursor.execute("ALTER TABLE productos ADD COLUMN margen_alerta REAL")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_productos_nombre_norm ON productos(nombre_norm)")
+
+    # Tabla: umbrales por categoría (RF-30)
+    # Una fila por categoría. NULL en un campo = usa el valor de fábrica.
+    # La categoría se compara sin distinguir mayúsculas al resolver umbrales,
+    # para que 'Herramientas' y 'herramientas' no acaben con configuraciones
+    # distintas sin que nadie entienda por qué.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS umbrales_categoria (
+            categoria TEXT PRIMARY KEY,
+            dias_alerta_inminente INTEGER,
+            margen_alerta REAL,
+            actualizado TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
     
     # Tabla: ventas (historial de ventas importadas)
     # La fecha se guarda como TEXT en formato ISO YYYY-MM-DD porque las

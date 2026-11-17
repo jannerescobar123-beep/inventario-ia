@@ -213,12 +213,58 @@ paths:
     get:
       tags: [Alertas]
       summary: Alertas de riesgo de agotamiento y comportamientos inusuales (RF-28, RF-29)
+      description: >
+        Incluye además `exceso_stock` (productos por encima de su stock máximo,
+        RF-42) y, en cada alerta de agotamiento, el umbral aplicado
+        (`umbral_margen`, `umbral_dias`) resuelto por producto o categoría (RF-30).
       responses:
         '200':
           description: Alertas agrupadas por tipo
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Alertas' }
+  /api/umbrales:
+    get:
+      tags: [Alertas]
+      summary: Configuración efectiva de los umbrales de alerta (RF-30)
+      description: >
+        Valores de fábrica (margen 1.5, 7 días de inminente) y, por categoría, lo
+        que hay configurado. Los umbrales propios de un producto se ven en
+        /api/productos.
+      responses:
+        '200':
+          description: Umbrales de fábrica y configuración por categoría
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Umbrales' }
+  /api/umbrales/{categoria}:
+    put:
+      tags: [Alertas]
+      summary: Configurar los umbrales de alerta de una categoría (RF-30)
+      description: >
+        Un campo en null devuelve ese umbral al valor de fábrica; si los dos van
+        en null, la categoría deja de tener configuración propia. La categoría se
+        compara sin distinguir mayúsculas ni tildes.
+      parameters:
+        - name: categoria
+          in: path
+          required: true
+          schema: { type: string }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/UmbralCategoriaEntrada' }
+      responses:
+        '200':
+          description: Configuración guardada (o restablecida a los valores de fábrica)
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/UmbralCategoria' }
+        '404':
+          description: Ningún producto usa esa categoría (evita configuraciones fantasma)
+        '422':
+          description: Umbral inválido (días menores que 1 o margen no positivo)
   /api/chat:
     post:
       tags: [Chat IA]
@@ -255,6 +301,9 @@ components:
         precio_venta: { type: number, nullable: true }
         stock_actual: { type: number }
         stock_minimo: { type: number }
+        stock_maximo: { type: integer, nullable: true, description: 'Máximo de stock; null = sin máximo (RF-42)' }
+        dias_alerta_inminente: { type: integer, nullable: true, description: 'Días de cobertura por debajo de los cuales la alerta es inminente; null = hereda de su categoría o de fábrica (RF-30)' }
+        margen_alerta: { type: number, nullable: true, description: 'Multiplicador del stock mínimo para alertar; null = hereda de su categoría o de fábrica (RF-30)' }
       required: [id, nombre]
     KPIs:
       type: object
@@ -383,7 +432,21 @@ components:
               stock_minimo: { type: number }
               riesgo: { type: string, enum: [agotamiento_inminente, agotamiento_pronto] }
               dias_estimados: { type: integer, nullable: true }
+              umbral_margen: { type: number, description: 'Margen aplicado a este producto: el suyo, el de su categoría o 1.5 (RF-30)' }
+              umbral_dias: { type: integer, description: 'Días de cobertura que marcan "inminente": los suyos, los de su categoría o 7 (RF-30)' }
               valor_inventario: { type: number }
+        exceso_stock:
+          type: array
+          description: Productos por encima de su stock máximo (RF-42); vacío si nadie tiene máximo
+          items:
+            type: object
+            properties:
+              producto_id: { type: integer }
+              producto: { type: string }
+              stock_actual: { type: number }
+              stock_maximo: { type: number }
+              exceso_unidades: { type: integer }
+              capital_inmovilizado: { type: number, description: 'Unidades de más valoradas a precio de venta' }
         comportamiento:
           type: object
           description: Resultado del análisis de anomalías (picos/caídas)
@@ -438,4 +501,39 @@ components:
         precio_venta: { type: number, minimum: 0, default: 0 }
         stock_actual: { type: integer, minimum: 0, default: 0 }
         stock_minimo: { type: integer, minimum: 0, default: 0 }
+        stock_maximo: { type: integer, minimum: 0, nullable: true, default: null, description: 'RF-42. En la edición solo se sobrescribe si se envía' }
+        dias_alerta_inminente: { type: integer, minimum: 1, nullable: true, default: null, description: 'RF-30. En la edición solo se sobrescribe si se envía' }
+        margen_alerta: { type: number, exclusiveMinimum: 0, nullable: true, default: null, description: 'RF-30. En la edición solo se sobrescribe si se envía' }
       required: [nombre]
+    UmbralCategoriaEntrada:
+      type: object
+      description: Configuración de umbrales de una categoría (RF-30). Un campo en null vuelve al valor de fábrica
+      properties:
+        dias_alerta_inminente: { type: integer, minimum: 1, nullable: true }
+        margen_alerta: { type: number, exclusiveMinimum: 0, nullable: true }
+    Umbrales:
+      type: object
+      properties:
+        por_defecto:
+          type: object
+          properties:
+            dias_inminente: { type: integer, example: 7 }
+            margen: { type: number, example: 1.5 }
+        categorias:
+          type: array
+          items:
+            type: object
+            properties:
+              categoria: { type: string }
+              dias_inminente: { type: integer, description: 'Valor efectivo (configurado o de fábrica)' }
+              margen: { type: number, description: 'Valor efectivo (configurado o de fábrica)' }
+              propio_dias_inminente: { type: integer, nullable: true, description: 'null si la categoría no lo configura' }
+              propio_margen: { type: number, nullable: true, description: 'null si la categoría no lo configura' }
+    UmbralCategoria:
+      type: object
+      description: Resultado de configurar una categoría (RF-30)
+      properties:
+        categoria: { type: string }
+        dias_inminente: { type: integer }
+        margen: { type: number }
+        configurada: { type: boolean, description: 'false cuando la categoría vuelve a los valores de fábrica' }

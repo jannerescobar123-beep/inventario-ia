@@ -12,7 +12,10 @@ from pydantic import BaseModel, Field
 try:  # Carga como paquete: python -m uvicorn backend.api.main:app --port 8000
     from backend.api.database import get_db, init_db, normalizar_texto
     from backend.api.estadisticas import (
+        UMBRAL_DIAS_INMINENTE_POR_DEFECTO,
+        UMBRAL_MARGEN_POR_DEFECTO,
         alertas_comportamientos_inusuales,
+        alertas_exceso_stock,
         alertas_riesgo_agotamiento,
         calcular_kpis,
         calcular_rotacion_inventario,
@@ -26,7 +29,10 @@ try:  # Carga como paquete: python -m uvicorn backend.api.main:app --port 8000
 except ImportError:  # Ejecución directa: python backend/api/main.py
     from database import get_db, init_db, normalizar_texto
     from estadisticas import (
+        UMBRAL_DIAS_INMINENTE_POR_DEFECTO,
+        UMBRAL_MARGEN_POR_DEFECTO,
         alertas_comportamientos_inusuales,
+        alertas_exceso_stock,
         alertas_riesgo_agotamiento,
         calcular_kpis,
         calcular_rotacion_inventario,
@@ -55,6 +61,23 @@ class ProductoEntrada(BaseModel):
     precio_venta: float = Field(default=0, ge=0)
     stock_actual: int = Field(default=0, ge=0)
     stock_minimo: int = Field(default=0, ge=0)
+    # RF-42: máximo de stock; NULL = este producto no tiene máximo.
+    stock_maximo: Optional[int] = Field(default=None, ge=0)
+    # RF-30: umbrales propios; NULL = hereda el de su categoría o el de fábrica.
+    dias_alerta_inminente: Optional[int] = Field(default=None, ge=1)
+    margen_alerta: Optional[float] = Field(default=None, gt=0)
+
+
+class UmbralCategoriaEntrada(BaseModel):
+    """
+    Cuerpo de configuración de los umbrales de una categoría (RF-30).
+
+    Un campo en `null` devuelve ese umbral al valor de fábrica; si los dos van
+    en `null`, la categoría deja de tener configuración propia.
+    """
+
+    dias_alerta_inminente: Optional[int] = Field(default=None, ge=1)
+    margen_alerta: Optional[float] = Field(default=None, gt=0)
 
 
 def _leer_producto(cursor, producto_id: int) -> dict:
@@ -183,13 +206,159 @@ def api_kpis():
 
 @app.get("/api/alertas")
 def api_alertas():
-    """Alertas de riesgo de agotamiento y comportamientos inusuales."""
+    """Alertas de riesgo de agotamiento, exceso de stock y comportamientos inusuales."""
     conn = get_db()
     try:
         return {
             "riesgo_agotamiento": alertas_riesgo_agotamiento(conn),
+            "exceso_stock": alertas_exceso_stock(conn),
             "comportamiento": alertas_comportamientos_inusuales(conn)
         }
+    finally:
+        conn.close()
+
+
+def _categoria_existente(cursor, categoria: str) -> str:
+    """
+    Devolver la grafía real de una categoría del catálogo (RF-30).
+
+    Evita configuraciones fantasma: si se pide 'Herramienta' y en el catálogo
+    pone 'Herramientas', se responde 404 en lugar de guardar una fila que no
+    afecta a ningún producto.
+
+    La comparación ignora mayúsculas y tildes (normalizar_texto, el mismo
+    criterio que usa ADR-003 para emparejar productos y ventas): si el catálogo
+    dice 'Ferretería', escribir 'Ferreteria' debe funcionar.
+    """
+    objetivo = normalizar_texto(categoria.strip())
+    cursor.execute(
+        "SELECT DISTINCT categoria FROM productos "
+        "WHERE categoria IS NOT NULL AND TRIM(categoria) <> ''"
+    )
+    for (cat,) in cursor.fetchall():
+        if normalizar_texto(cat) == objetivo:
+            return cat
+
+    raise HTTPException(
+        status_code=404,
+        detail=f"Ningún producto usa la categoría '{categoria.strip()}'",
+    )
+
+
+def _fila_umbral_categoria(cursor, categoria: str) -> Optional[tuple]:
+    """Devolver la fila de umbrales_categoria que corresponde a esa categoría."""
+    objetivo = normalizar_texto(categoria)
+    cursor.execute(
+        "SELECT categoria, dias_alerta_inminente, margen_alerta FROM umbrales_categoria"
+    )
+    for fila in cursor.fetchall():
+        if normalizar_texto(fila[0]) == objetivo:
+            return fila
+    return None
+
+
+def _umbral_categoria_efectivo(cursor, categoria: str) -> dict:
+    """Umbrales que se aplican hoy a una categoría, resueltos con los de fábrica."""
+    fila = _fila_umbral_categoria(cursor, categoria)
+    dias, margen = (fila[1], fila[2]) if fila else (None, None)
+
+    return {
+        "categoria": categoria,
+        "dias_inminente": dias if dias is not None else UMBRAL_DIAS_INMINENTE_POR_DEFECTO,
+        "margen": margen if margen is not None else UMBRAL_MARGEN_POR_DEFECTO,
+        "configurada": fila is not None,
+    }
+
+
+@app.get("/api/umbrales")
+def api_umbrales():
+    """
+    Configuración efectiva de los umbrales de alerta (RF-30).
+
+    Devuelve los valores de fábrica y, por categoría, lo que hay configurado.
+    Los productos que tienen umbral propio lo muestran en /api/productos.
+    """
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT categoria, dias_alerta_inminente, margen_alerta
+            FROM umbrales_categoria
+            ORDER BY categoria COLLATE NOCASE ASC
+        """)
+        categorias = [
+            {
+                "categoria": fila[0],
+                "dias_inminente": (
+                    fila[1] if fila[1] is not None
+                    else UMBRAL_DIAS_INMINENTE_POR_DEFECTO
+                ),
+                "margen": (
+                    fila[2] if fila[2] is not None
+                    else UMBRAL_MARGEN_POR_DEFECTO
+                ),
+                "propio_dias_inminente": fila[1],
+                "propio_margen": fila[2],
+            }
+            for fila in cursor.fetchall()
+        ]
+
+        return {
+            "por_defecto": {
+                "dias_inminente": UMBRAL_DIAS_INMINENTE_POR_DEFECTO,
+                "margen": UMBRAL_MARGEN_POR_DEFECTO,
+            },
+            "categorias": categorias,
+        }
+    finally:
+        conn.close()
+
+
+@app.put("/api/umbrales/{categoria}")
+def api_configurar_umbrales(categoria: str, datos: UmbralCategoriaEntrada):
+    """
+    Configurar los umbrales de alerta de una categoría (RF-30).
+
+    - Un campo en null devuelve ese umbral al valor de fábrica.
+    - Si los dos van en null, la categoría deja de tener configuración propia.
+    - 404 si ningún producto usa esa categoría (evita configuraciones fantasma).
+    """
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        nombre_categoria = _categoria_existente(cursor, categoria)
+
+        # Reutilizar la fila existente aunque se haya escrito con otra grafía.
+        fila = _fila_umbral_categoria(cursor, nombre_categoria)
+        if fila is not None:
+            nombre_categoria = fila[0]
+
+        if datos.dias_alerta_inminente is None and datos.margen_alerta is None:
+            if fila is not None:
+                cursor.execute(
+                    "DELETE FROM umbrales_categoria WHERE categoria = ?",
+                    (fila[0],),
+                )
+            resultado = _umbral_categoria_efectivo(cursor, nombre_categoria)
+            resultado["configurada"] = False
+        else:
+            cursor.execute("""
+                INSERT INTO umbrales_categoria
+                    (categoria, dias_alerta_inminente, margen_alerta, actualizado)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(categoria) DO UPDATE SET
+                    dias_alerta_inminente = excluded.dias_alerta_inminente,
+                    margen_alerta = excluded.margen_alerta,
+                    actualizado = CURRENT_TIMESTAMP
+            """, (
+                nombre_categoria,
+                datos.dias_alerta_inminente,
+                datos.margen_alerta,
+            ))
+            resultado = _umbral_categoria_efectivo(cursor, nombre_categoria)
+
+        conn.commit()
+        return resultado
     finally:
         conn.close()
 
@@ -201,7 +370,8 @@ def api_productos():
         cursor = conn.cursor()
         cursor.execute("""
             SELECT id, sku, nombre, categoria, costo, precio_venta,
-                   stock_actual, stock_minimo
+                   stock_actual, stock_minimo,
+                   stock_maximo, dias_alerta_inminente, margen_alerta
             FROM productos
             ORDER BY nombre ASC
         """)
@@ -214,7 +384,10 @@ def api_productos():
             "costo": f[4],
             "precio_venta": f[5],
             "stock_actual": f[6],
-            "stock_minimo": f[7]
+            "stock_minimo": f[7],
+            "stock_maximo": f[8],
+            "dias_alerta_inminente": f[9],
+            "margen_alerta": f[10]
         } for f in filas]
     finally:
         conn.close()
@@ -247,11 +420,13 @@ def api_crear_producto(datos: ProductoEntrada):
 
         cursor.execute("""
             INSERT INTO productos (sku, nombre, nombre_norm, categoria, unidad,
-                                   costo, precio_venta, stock_actual, stock_minimo)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   costo, precio_venta, stock_actual, stock_minimo,
+                                   stock_maximo, dias_alerta_inminente, margen_alerta)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             sku, nombre, normalizar_texto(nombre), datos.categoria, datos.unidad,
             datos.costo, datos.precio_venta, datos.stock_actual, datos.stock_minimo,
+            datos.stock_maximo, datos.dias_alerta_inminente, datos.margen_alerta,
         ))
         conn.commit()
         return _leer_producto(cursor, cursor.lastrowid)
@@ -265,6 +440,11 @@ def api_editar_producto(producto_id: int, datos: ProductoEntrada):
 
     Sustituye los campos editables. Si no se envía SKU se conserva el actual.
     Devuelve 404 si el producto no existe y 409 si el SKU pertenece a otro.
+
+    Los umbrales de RF-30/RF-42 (`stock_maximo`, `dias_alerta_inminente`,
+    `margen_alerta`) solo se sobrescriben si llegan en el cuerpo: el formulario
+    actual no los envía y borrarlos en cada edición sería perder configuración
+    sin que nadie lo pidiera. Para quitarlos, se envían explícitamente en null.
     """
     conn = get_db()
     try:
@@ -287,17 +467,25 @@ def api_editar_producto(producto_id: int, datos: ProductoEntrada):
                     detail=f"Ya existe otro producto con el SKU {sku}",
                 )
 
+        enviados = datos.model_fields_set
+
         cursor.execute("""
             UPDATE productos SET
                 sku = COALESCE(?, sku),
                 nombre = ?, nombre_norm = ?,
                 categoria = ?, unidad = ?,
                 costo = ?, precio_venta = ?,
-                stock_actual = ?, stock_minimo = ?
+                stock_actual = ?, stock_minimo = ?,
+                stock_maximo = CASE WHEN ? THEN ? ELSE stock_maximo END,
+                dias_alerta_inminente = CASE WHEN ? THEN ? ELSE dias_alerta_inminente END,
+                margen_alerta = CASE WHEN ? THEN ? ELSE margen_alerta END
             WHERE id = ?
         """, (
             sku, nombre, normalizar_texto(nombre), datos.categoria, datos.unidad,
             datos.costo, datos.precio_venta, datos.stock_actual, datos.stock_minimo,
+            "stock_maximo" in enviados, datos.stock_maximo,
+            "dias_alerta_inminente" in enviados, datos.dias_alerta_inminente,
+            "margen_alerta" in enviados, datos.margen_alerta,
             producto_id,
         ))
         conn.commit()
