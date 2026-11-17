@@ -11,6 +11,7 @@ Ejecución desde la raíz del repositorio:
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pytest
 
 # La raíz del repositorio en el path para importar backend.* como paquete
@@ -239,3 +240,30 @@ def test_venta_distinta_no_se_confunde_con_duplicado(bd_temporal, tmp_path):
     assert resultado["total_ventas"] == 3
     assert resultado["ventas_duplicadas_omitidas"] == 0
     assert _contar_ventas() == 3
+
+
+# --- Robustez de la importación de Excel -----------------------------------
+
+def test_importar_excel_libera_el_archivo(bd_temporal, tmp_path):
+    """
+    Tras importar un .xlsx el archivo debe poder borrarse.
+
+    En Windows un archivo abierto no se puede eliminar (WinError 32), y
+    POST /api/importar borra el temporal después de importar: si el libro
+    sigue abierto, el endpoint responde 500 con los datos ya guardados.
+    """
+    from backend.api import importador
+
+    ruta = tmp_path / "ventas.xlsx"
+    pd.DataFrame([{
+        "fecha": "2026-11-05",
+        "producto": "Martillo profesional",
+        "cantidad": 2,
+        "precio": 44.0,
+    }]).to_excel(ruta, sheet_name="ventas", index=False)
+
+    resultado = importador.importar_excel(str(ruta))
+    assert resultado["total_ventas"] == 1
+
+    ruta.unlink()  # PermissionError si el libro sigue abierto
+    assert not ruta.exists()

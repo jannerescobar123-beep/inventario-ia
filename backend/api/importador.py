@@ -88,47 +88,49 @@ def importar_excel(ruta_archivo: Optional[str] = None,
     # Garantizar que las tablas existan antes de escribir (idempotente)
     init_db()
     
-    xl = pd.ExcelFile(ruta_archivo)
-    nombres_hojas = [str(n).strip().lower() for n in xl.sheet_names]
-    resultado = {
-        "archivo_origen": nombre_original or str(ruta_archivo),
-        "productos_creados": 0,
-        "productos_actualizados": 0,
-        "total_ventas": 0,
-        "ventas_duplicadas_omitidas": 0,
-        "errores": []
-    }
-    
-    ids_creados: Set[int] = set()
-    ids_actualizados: Set[int] = set()
-    
-    # 1. Importar hoja 'productos' si existe (ADR-003)
-    if tiene_hoja_productos and "productos" in nombres_hojas:
-        df_productos = _normalizar_columnas(pd.read_excel(xl, sheet_name="productos"))
-        if not df_productos.empty:
-            _, _, ids_creados_cat, ids_actualizados_cat = _procesar_productos(df_productos)
-            ids_creados |= ids_creados_cat
-            ids_actualizados |= ids_actualizados_cat
-    
-    # 2. Importar hoja 'ventas'
-    if "ventas" in nombres_hojas:
-        df_ventas = _normalizar_columnas(pd.read_excel(xl, sheet_name="ventas"))
-        if not df_ventas.empty:
-            total_registros, errores, ids_creados_ventas, ids_actualizados_ventas, duplicadas = \
-                _validar_y_guardar_ventas(df_ventas)
-            ids_creados |= ids_creados_ventas
-            ids_actualizados |= ids_actualizados_ventas
-            resultado["total_ventas"] = total_registros
-            resultado["ventas_duplicadas_omitidas"] = duplicadas
-            resultado["errores"] = errores
-    
+    # El libro se cierra siempre: en Windows un .xlsx abierto no se puede
+    # borrar, y POST /api/importar elimina el temporal tras importar.
+    with pd.ExcelFile(ruta_archivo) as xl:
+        nombres_hojas = [str(n).strip().lower() for n in xl.sheet_names]
+        resultado = {
+            "archivo_origen": nombre_original or str(ruta_archivo),
+            "productos_creados": 0,
+            "productos_actualizados": 0,
+            "total_ventas": 0,
+            "ventas_duplicadas_omitidas": 0,
+            "errores": []
+        }
+
+        ids_creados: Set[int] = set()
+        ids_actualizados: Set[int] = set()
+
+        # 1. Importar hoja 'productos' si existe (ADR-003)
+        if tiene_hoja_productos and "productos" in nombres_hojas:
+            df_productos = _normalizar_columnas(pd.read_excel(xl, sheet_name="productos"))
+            if not df_productos.empty:
+                _, _, ids_creados_cat, ids_actualizados_cat = _procesar_productos(df_productos)
+                ids_creados |= ids_creados_cat
+                ids_actualizados |= ids_actualizados_cat
+
+        # 2. Importar hoja 'ventas'
+        if "ventas" in nombres_hojas:
+            df_ventas = _normalizar_columnas(pd.read_excel(xl, sheet_name="ventas"))
+            if not df_ventas.empty:
+                total_registros, errores, ids_creados_ventas, ids_actualizados_ventas, duplicadas = \
+                    _validar_y_guardar_ventas(df_ventas)
+                ids_creados |= ids_creados_ventas
+                ids_actualizados |= ids_actualizados_ventas
+                resultado["total_ventas"] = total_registros
+                resultado["ventas_duplicadas_omitidas"] = duplicadas
+                resultado["errores"] = errores
+
     # Contadores sin duplicados: un producto creado no cuenta como actualizado
     resultado["productos_creados"] = len(ids_creados)
     resultado["productos_actualizados"] = len(ids_actualizados - ids_creados)
-    
+
     # 3. Registrar importación en historial
     _registrar_importacion(resultado)
-    
+
     return resultado
 
 
