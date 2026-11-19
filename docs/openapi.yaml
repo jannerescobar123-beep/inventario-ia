@@ -254,6 +254,45 @@ paths:
           content:
             application/json:
               schema: { $ref: '#/components/schemas/Estacionalidad' }
+  /api/tendencias:
+    get:
+      tags: [Análisis]
+      summary: Serie de ventas por día, semana o mes (RF-10)
+      description: >
+        Los periodos sin ventas aparecen con cero: un día que no se vendió es
+        información, no un hueco. Las semanas son ISO (lunes a domingo). La
+        serie se ancla en la última venta registrada, no en la fecha del equipo.
+      parameters:
+        - { in: query, name: granularidad, schema: { type: string, enum: [dia, semana, mes], default: mes }, description: 'Agrupación de la serie' }
+        - { in: query, name: desde, schema: { type: string, format: date }, description: 'Fecha inicial AAAA-MM-DD (opcional)' }
+        - { in: query, name: hasta, schema: { type: string, format: date }, description: 'Fecha final AAAA-MM-DD (opcional)' }
+      responses:
+        '200':
+          description: Serie de ventas y resumen de tendencia
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Tendencias' }
+        '400':
+          description: Granularidad inválida o rango de fechas invertido
+  /api/comparacion:
+    get:
+      tags: [Análisis]
+      summary: Comparar el periodo actual con otro (RF-16)
+      description: >
+        Si el periodo de referencia no tiene ventas, devuelve
+        `disponible: false` con el motivo, en lugar de un 0 % que parecería
+        una caída real.
+      parameters:
+        - { in: query, name: tipo, schema: { type: string, enum: [semana, mes], default: semana }, description: 'Periodo a comparar' }
+        - { in: query, name: contra, schema: { type: string, enum: [anterior, anio_anterior], default: anterior }, description: 'Periodo de referencia; anio_anterior solo aplica a tipo=mes' }
+      responses:
+        '200':
+          description: Comparación de periodos
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Comparacion' }
+        '400':
+          description: Tipo o referencia inválidos
   /api/alertas:
     get:
       tags: [Alertas]
@@ -494,6 +533,80 @@ components:
         promedios_mensuales:
           type: object
           additionalProperties: { type: number }
+    Tendencias:
+      type: object
+      description: Serie de ventas por periodo y resumen de tendencia (RF-10)
+      properties:
+        granularidad: { type: string, enum: [dia, semana, mes] }
+        desde: { type: string, format: date, description: 'Inicio del primer periodo devuelto' }
+        hasta: { type: string, format: date }
+        ancla: { type: string, format: date, description: 'Última venta registrada; la serie se ancla aquí' }
+        ventana_solicitada:
+          type: object
+          description: 'Ventana pedida, antes de recortar los extremos sin ventas'
+          properties:
+            desde: { type: string, format: date }
+            hasta: { type: string, format: date }
+        puntos:
+          type: array
+          items:
+            type: object
+            properties:
+              periodo: { type: string, example: '2026-W45' }
+              etiqueta: { type: string, example: 'Sem 45 · 2 nov–8 nov' }
+              unidades: { type: integer }
+              ingresos: { type: number }
+              num_ventas: { type: integer }
+              precio_medio_unidad: { type: number, nullable: true, description: 'ingresos / unidades' }
+              ingresos_por_venta: { type: number, nullable: true, description: 'ingresos / número de ventas' }
+              variacion_unidades_pct: { type: number, nullable: true, description: 'Variación frente al periodo anterior de la serie' }
+        resumen:
+          type: object
+          properties:
+            periodos: { type: integer }
+            unidades_totales: { type: integer }
+            ingresos_totales: { type: number }
+            media_unidades_por_periodo: { type: number }
+            pendiente_unidades_por_periodo: { type: number }
+            pendiente_relativa_pct: { type: number }
+            direccion: { type: string, enum: [sube, baja, estable] }
+    Comparacion:
+      type: object
+      description: Comparación de dos periodos (RF-16)
+      properties:
+        disponible: { type: boolean, description: 'false si el periodo de referencia no tiene ventas' }
+        motivo: { type: string, nullable: true }
+        tipo: { type: string, enum: [semana, mes] }
+        contra: { type: string, enum: [anterior, anio_anterior] }
+        actual: { $ref: '#/components/schemas/ComparacionPeriodo' }
+        referencia: { $ref: '#/components/schemas/ComparacionPeriodo' }
+        completo: { type: boolean, description: 'false si el periodo actual está en curso' }
+        dias_con_datos: { type: integer }
+        dias_totales_periodo: { type: integer }
+        nota: { type: string, nullable: true }
+        variacion:
+          type: object
+          nullable: true
+          properties:
+            unidades: { type: integer }
+            unidades_pct: { type: number, nullable: true }
+            ingresos: { type: number }
+            ingresos_pct: { type: number, nullable: true }
+            num_ventas: { type: integer }
+            num_ventas_pct: { type: number, nullable: true }
+    ComparacionPeriodo:
+      type: object
+      properties:
+        periodo: { type: string, example: '2026-11' }
+        etiqueta: { type: string, example: 'nov 2026' }
+        desde: { type: string, format: date }
+        hasta: { type: string, format: date }
+        unidades: { type: integer }
+        ingresos: { type: number }
+        num_ventas: { type: integer }
+        precio_medio_unidad: { type: number, nullable: true }
+        ingresos_por_venta: { type: number, nullable: true }
+        tiene_datos: { type: boolean }
     Alertas:
       type: object
       properties:

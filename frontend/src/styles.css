@@ -239,6 +239,10 @@ a:hover { color: var(--bs-link-hover-color); }
   font-size: var(--t-m);
   font-weight: 550;
   text-decoration: none;
+  /* Sin esto, con seis entradas el texto se parte en tres líneas a 768 px
+     («Panel de / control»). El menú en línea solo se muestra cuando hay ancho
+     para él; por debajo se usa el cajón lateral. */
+  white-space: nowrap;
   transition: color .2s var(--ease), background-color .2s var(--ease);
 }
 .nav-link:hover { color: var(--text); background: rgba(255, 255, 255, .05); }
@@ -619,11 +623,24 @@ a.btn { text-decoration: none; }
   border-color: var(--accent);
   color: var(--text);
   outline: none;
-  box-shadow: 0 0 0 3px rgba(99, 102, 241, .28);
+  /* Anillo sólido de 2 px: el anterior (rgba(99,102,241,.28)) compuesto daba
+     1,63:1 contra el fondo, por debajo del 3:1 exigido a los indicadores de
+     foco (WCAG 2.4.11). Con --accent al 100 % queda en 3,58:1. */
+  box-shadow: 0 0 0 2px var(--accent);
 }
 .form-select {
   --bs-form-select-bg-img: url("data:image/svg+xml,%3csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3e%3cpath fill='none' stroke='%2394A3B8' stroke-linecap='round' stroke-linejoin='round' stroke-width='2' d='m2 5 6 6 6-6'/%3e%3c/svg%3e");
+  /* Un solo chevron. Sin `appearance: none` el navegador dibuja además el suyo,
+     y sin `no-repeat`/`position` la imagen se repetía por toda la caja: el
+     resultado era «Por semana ⌄⌄⌄» con la flecha encima del texto. */
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
   background-image: var(--bs-form-select-bg-img);
+  background-repeat: no-repeat;
+  background-position: right .9rem center;
+  background-size: 16px 16px;
+  padding-right: 2.6rem;
 }
 .filter-bar {
   display: flex;
@@ -926,7 +943,9 @@ a.btn { text-decoration: none; }
 @media (min-width: 640px) {
   .kpi-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
 }
-@media (min-width: 768px) {
+@media (min-width: 1200px) {
+  /* 1100 no bastaba: con seis entradas el nombre de la marca se recortaba a
+     «Invent…» entre 1100 y ~1180 px. A 1200 hay sitio para marca y menú. */
   .nav-links { display: flex; }
   .hamburger-btn { display: none; }
 }
@@ -1161,4 +1180,48 @@ a.btn { text-decoration: none; }
     padding: .3rem .55rem;
     font-size: 12px;
   }
+}
+
+/* ---------- 15. Tendencias y comparación de periodos (RF-10 / RF-16) ---------- */
+.kpi-value-muted {
+  font-size: var(--t-xl);
+  color: var(--text-3);
+}
+.kpi-card-muted {
+  border-style: dashed;
+}
+.kpi-nota {
+  display: block;
+  margin-top: .35rem;
+  font-size: var(--t-xs);
+  line-height: 1.45;
+  color: var(--warning);
+}
+/* Variación: el color no es el único portador de significado; el signo (+/−)
+   y el texto del hint lo acompañan siempre (WCAG 1.4.1). */
+.delta {
+  font-variant-numeric: tabular-nums;
+}
+.delta-up { color: var(--success); }
+.delta-down { color: var(--danger); }
+.delta-flat { color: var(--text-2); }
+.chart-box-alto {
+  height: 360px;
+}
+.form-select-inline {
+  width: auto;
+  /* Deja sitio al texto «Por semana» más el chevron (padding-right 2.6rem). */
+  min-width: 11rem;
+  min-height: 44px;
+}
+.resumen-tendencia {
+  margin-top: .75rem;
+}
+/* Tres comparaciones, no cuatro: la rejilla compartida abre 4 columnas a
+   partir de 1100 px y dejaba un cuarto hueco vacío a la derecha. */
+@media (min-width: 640px) {
+  .kpi-grid-tres { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 1100px) {
+  .kpi-grid-tres { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }

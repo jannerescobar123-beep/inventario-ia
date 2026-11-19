@@ -255,7 +255,12 @@ def test_reparar_resumen_compra_sin_compras_no_toca_nada():
 
 
 def test_openapi_sincronizado_con_rutas():
-    """Las 13 rutas del contrato deben existir en la app (ADR-004)."""
+    """
+    El contrato y la app deben decir lo mismo en las dos direcciones (ADR-004).
+
+    Antes solo se comprobaba contrato -> app, así que una ruta implementada y
+    no documentada pasaba inadvertida. Ahora también se detecta lo contrario.
+    """
     try:
         import yaml
     except ModuleNotFoundError:
@@ -275,6 +280,16 @@ def test_openapi_sincronizado_con_rutas():
             for linea in fichero_contrato.read_text(encoding="utf-8").splitlines()
             if linea.startswith("  /") and linea.rstrip().endswith(":")
         }
-    rutas_app = {r.path for r in app.routes if hasattr(r, "path")}
-    faltan = rutas_contrato - rutas_app
+    # Todas las rutas reales de la app, y el subconjunto que es contrato.
+    rutas_app_todas = {r.path for r in app.routes if hasattr(r, "path")}
+    rutas_app_api = {p for p in rutas_app_todas if p.startswith("/api/")}
+    rutas_contrato_api = {p for p in rutas_contrato if p.startswith("/api/")}
+
+    faltan = sorted(rutas_contrato - rutas_app_todas)
     assert not faltan, f"Rutas en el contrato sin implementar: {faltan}"
+
+    # /docs, /openapi.json y /redoc los sirve FastAPI: no son contrato.
+    sin_documentar = sorted(rutas_app_api - rutas_contrato_api)
+    assert not sin_documentar, (
+        f"Rutas implementadas y no documentadas en el contrato: {sin_documentar}"
+    )

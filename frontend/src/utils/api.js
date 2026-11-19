@@ -24,6 +24,14 @@ export const api = {
   rotacion: () => pedir("/api/rotacion"),
   recomendaciones: () => pedir("/api/recomendaciones"),
 
+  // RF-10: serie de ventas por día, semana o mes.
+  tendencias: (granularidad = "semana") =>
+    pedir(`/api/tendencias?granularidad=${encodeURIComponent(granularidad)}`),
+
+  // RF-16: comparación del periodo actual con otro.
+  comparacion: (tipo = "semana", contra = "anterior") =>
+    pedir(`/api/comparacion?tipo=${encodeURIComponent(tipo)}&contra=${encodeURIComponent(contra)}`),
+
   // RF-27: la orden de compra se descarga como archivo (CSV) o se abre en una
   // pestaña para imprimirla o guardarla como PDF. Se devuelven URLs porque el
   // navegador ya sabe descargar y abrir; no hay nada que parsear.

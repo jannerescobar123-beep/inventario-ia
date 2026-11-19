@@ -32,6 +32,10 @@ try:  # Carga como paquete: python -m uvicorn backend.api.main:app --port 8000
         orden_a_csv,
         orden_a_html,
     )
+    from backend.api.tendencias import (
+        comparar_periodos,
+        serie_ventas,
+    )
 except ImportError:  # Ejecución directa: python backend/api/main.py
     from database import get_db, init_db, normalizar_texto
     from estadisticas import (
@@ -53,6 +57,10 @@ except ImportError:  # Ejecución directa: python backend/api/main.py
         generar_orden_compra,
         orden_a_csv,
         orden_a_html,
+    )
+    from tendencias import (
+        comparar_periodos,
+        serie_ventas,
     )
 
 # Extensiones aceptadas por el endpoint de importación
@@ -635,6 +643,49 @@ def api_estacionalidad(producto: str = None):
     conn = get_db()
     try:
         return detectar_estacionalidad(conn, producto_nombre=producto.upper() if producto else None)
+    finally:
+        conn.close()
+
+@app.get("/api/tendencias")
+def api_tendencias(granularidad: str = "mes", desde: str = None, hasta: str = None):
+    """
+    Serie de ventas por día, semana o mes (RF-10).
+
+    Query params:
+      - granularidad: `dia`, `semana` o `mes` (por defecto `mes`).
+      - desde / hasta: fechas `AAAA-MM-DD` opcionales. Sin ellas se usan los
+        últimos 90 días (día), 26 semanas o 12 meses, anclados en la última
+        venta registrada.
+
+    Los periodos sin ventas aparecen con cero: un día que no se vendió es
+    información, no un hueco.
+    """
+    conn = get_db()
+    try:
+        return serie_ventas(conn, granularidad=granularidad, desde=desde, hasta=hasta)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    finally:
+        conn.close()
+
+@app.get("/api/comparacion")
+def api_comparacion(tipo: str = "semana", contra: str = "anterior"):
+    """
+    Comparar el periodo actual con otro (RF-16).
+
+    Query params:
+      - tipo: `semana` o `mes`.
+      - contra: `anterior` (periodo inmediatamente anterior) o `anio_anterior`
+        (el mismo mes del año pasado; solo para `tipo=mes`).
+
+    Si el periodo de referencia no tiene ventas, devuelve `disponible: false`
+    con el motivo, en lugar de un 0 % que parecería una caída real.
+    """
+    conn = get_db()
+    try:
+        return comparar_periodos(conn, tipo=tipo, contra=contra)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
     finally:
         conn.close()
 

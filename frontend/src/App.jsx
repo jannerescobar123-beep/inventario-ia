@@ -6,10 +6,12 @@ import Dashboard from "./components/dashboard/Dashboard"
 import WizardImport from "./components/wizard-import/WizardImport"
 import PanelAlertas from "./components/panel-alertas/PanelAlertas"
 import RecomendacionesCompras from "./components/recomendaciones-compras/RecomendacionesCompras"
+import Tendencias from "./components/tendencias/Tendencias"
 import ChatIA from "./components/chat-ia/ChatIA"
 
 const NAVEGACION = [
   { ruta: "/", etiqueta: "Panel de control", fin: true },
+  { ruta: "/tendencias", etiqueta: "Tendencias" },
   { ruta: "/importar", etiqueta: "Importar" },
   { ruta: "/alertas", etiqueta: "Alertas" },
   { ruta: "/compras", etiqueta: "Qué comprar" },
@@ -213,6 +215,7 @@ function Estructura() {
       <main className="page" ref={mainRef} tabIndex={-1}>
         <Routes>
           <Route path="/" element={<Dashboard />} />
+          <Route path="/tendencias" element={<Tendencias />} />
           <Route path="/importar" element={<WizardImport />} />
           <Route path="/alertas" element={<PanelAlertas />} />
           <Route path="/compras" element={<RecomendacionesCompras />} />
