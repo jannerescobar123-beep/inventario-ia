@@ -32,6 +32,14 @@ try:  # Carga como paquete: python -m uvicorn backend.api.main:app --port 8000
         orden_a_csv,
         orden_a_html,
     )
+    from backend.api.proveedores import (
+        actualizar_proveedor,
+        asignar_proveedor_a_producto,
+        crear_proveedor,
+        dar_de_baja_proveedor,
+        listar_proveedores,
+        validar_proveedor_asignable,
+    )
     from backend.api.tendencias import (
         comparar_periodos,
         serie_ventas,
@@ -57,6 +65,14 @@ except ImportError:  # Ejecución directa: python backend/api/main.py
         generar_orden_compra,
         orden_a_csv,
         orden_a_html,
+    )
+    from proveedores import (
+        actualizar_proveedor,
+        asignar_proveedor_a_producto,
+        crear_proveedor,
+        dar_de_baja_proveedor,
+        listar_proveedores,
+        validar_proveedor_asignable,
     )
     from tendencias import (
         comparar_periodos,
@@ -85,6 +101,8 @@ class ProductoEntrada(BaseModel):
     # RF-30: umbrales propios; NULL = hereda el de su categoría o el de fábrica.
     dias_alerta_inminente: Optional[int] = Field(default=None, ge=1)
     margen_alerta: Optional[float] = Field(default=None, gt=0)
+    # RF-43: proveedor del producto. NULL = sin proveedor (lead time global).
+    proveedor_id: Optional[int] = Field(default=None, ge=1)
 
 
 class UmbralCategoriaEntrada(BaseModel):
@@ -97,6 +115,32 @@ class UmbralCategoriaEntrada(BaseModel):
 
     dias_alerta_inminente: Optional[int] = Field(default=None, ge=1)
     margen_alerta: Optional[float] = Field(default=None, gt=0)
+
+
+# --- RF-43: proveedores ----------------------------------------------------
+
+class ProveedorEntrada(BaseModel):
+    """
+    Cuerpo de alta o edición de un proveedor (RF-43).
+
+    `lead_time_dias` es el plazo de entrega real: alimenta la demanda
+    proyectada, el punto de reorden y la fecha de entrega de las
+    recomendaciones. El máximo de 365 días evita un plazo absurdo por un cero
+    de más en el formulario.
+    """
+
+    nombre: str = Field(min_length=1, max_length=200)
+    lead_time_dias: int = Field(default=7, ge=1, le=365)
+    contacto: Optional[str] = None
+    telefono: Optional[str] = None
+    # Solo se usa en PUT: true reactiva un proveedor dado de baja.
+    activo: Optional[bool] = None
+
+
+class AsignacionProveedorEntrada(BaseModel):
+    """Cuerpo de asignación de proveedor a un producto; `null` = sin proveedor."""
+
+    proveedor_id: Optional[int] = Field(default=None, ge=1)
 
 
 def _leer_producto(cursor, producto_id: int) -> dict:
@@ -387,12 +431,18 @@ def api_productos():
     conn = get_db()
     try:
         cursor = conn.cursor()
+        # RF-43: se expone el proveedor y su lead time para que el catálogo no
+        # obligue a una segunda llamada. `lead_time_proveedor` es el plazo del
+        # proveedor asignado; el lead time aplicado en las recomendaciones es
+        # el de la ficha de cada producto (NULL = el global de 7 días).
         cursor.execute("""
-            SELECT id, sku, nombre, categoria, costo, precio_venta,
-                   stock_actual, stock_minimo,
-                   stock_maximo, dias_alerta_inminente, margen_alerta
-            FROM productos
-            ORDER BY nombre ASC
+            SELECT p.id, p.sku, p.nombre, p.categoria, p.costo, p.precio_venta,
+                   p.stock_actual, p.stock_minimo,
+                   p.stock_maximo, p.dias_alerta_inminente, p.margen_alerta,
+                   p.proveedor_id, pr.nombre AS proveedor, pr.lead_time_dias
+            FROM productos p
+            LEFT JOIN proveedores pr ON pr.id = p.proveedor_id
+            ORDER BY p.nombre ASC
         """)
         filas = cursor.fetchall()
         return [{
@@ -406,7 +456,10 @@ def api_productos():
             "stock_minimo": f[7],
             "stock_maximo": f[8],
             "dias_alerta_inminente": f[9],
-            "margen_alerta": f[10]
+            "margen_alerta": f[10],
+            "proveedor_id": f[11],
+            "proveedor": f[12],
+            "lead_time_proveedor": f[13],
         } for f in filas]
     finally:
         conn.close()
@@ -437,15 +490,20 @@ def api_crear_producto(datos: ProductoEntrada):
         else:
             sku = _generar_sku_unico(cursor, nombre)
 
+        # RF-43: si se asigna proveedor en el alta, tiene que estar activo.
+        validar_proveedor_asignable(cursor, datos.proveedor_id)
+
         cursor.execute("""
             INSERT INTO productos (sku, nombre, nombre_norm, categoria, unidad,
                                    costo, precio_venta, stock_actual, stock_minimo,
-                                   stock_maximo, dias_alerta_inminente, margen_alerta)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                   stock_maximo, dias_alerta_inminente, margen_alerta,
+                                   proveedor_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             sku, nombre, normalizar_texto(nombre), datos.categoria, datos.unidad,
             datos.costo, datos.precio_venta, datos.stock_actual, datos.stock_minimo,
             datos.stock_maximo, datos.dias_alerta_inminente, datos.margen_alerta,
+            datos.proveedor_id,
         ))
         conn.commit()
         return _leer_producto(cursor, cursor.lastrowid)
@@ -488,6 +546,10 @@ def api_editar_producto(producto_id: int, datos: ProductoEntrada):
 
         enviados = datos.model_fields_set
 
+        # RF-43: solo se valida si el cuerpo trae el campo (null = quitarlo).
+        if "proveedor_id" in enviados:
+            validar_proveedor_asignable(cursor, datos.proveedor_id)
+
         cursor.execute("""
             UPDATE productos SET
                 sku = COALESCE(?, sku),
@@ -497,7 +559,8 @@ def api_editar_producto(producto_id: int, datos: ProductoEntrada):
                 stock_actual = ?, stock_minimo = ?,
                 stock_maximo = CASE WHEN ? THEN ? ELSE stock_maximo END,
                 dias_alerta_inminente = CASE WHEN ? THEN ? ELSE dias_alerta_inminente END,
-                margen_alerta = CASE WHEN ? THEN ? ELSE margen_alerta END
+                margen_alerta = CASE WHEN ? THEN ? ELSE margen_alerta END,
+                proveedor_id = CASE WHEN ? THEN ? ELSE proveedor_id END
             WHERE id = ?
         """, (
             sku, nombre, normalizar_texto(nombre), datos.categoria, datos.unidad,
@@ -505,12 +568,103 @@ def api_editar_producto(producto_id: int, datos: ProductoEntrada):
             "stock_maximo" in enviados, datos.stock_maximo,
             "dias_alerta_inminente" in enviados, datos.dias_alerta_inminente,
             "margen_alerta" in enviados, datos.margen_alerta,
+            "proveedor_id" in enviados, datos.proveedor_id,
             producto_id,
         ))
         conn.commit()
         return _leer_producto(cursor, producto_id)
     finally:
         conn.close()
+
+
+# --- RF-43: proveedores ----------------------------------------------------
+
+@app.get("/api/proveedores")
+def api_proveedores(solo_activos: bool = False):
+    """
+    Listar proveedores ordenados por nombre.
+
+    `solo_activos=true` devuelve únicamente los que se pueden asignar: es lo
+    que consumen los selectores del catálogo.
+    """
+    conn = get_db()
+    try:
+        return listar_proveedores(conn, solo_activos=solo_activos)
+    finally:
+        conn.close()
+
+
+@app.post("/api/proveedores", status_code=201)
+def api_crear_proveedor(datos: ProveedorEntrada):
+    """
+    Alta de un proveedor (RF-43).
+
+    El nombre es único sin distinguir tildes ni mayúsculas: «Ferretería Paz» y
+    «Ferreteria paz» son el mismo proveedor. Un duplicado devuelve 409.
+    """
+    conn = get_db()
+    try:
+        return crear_proveedor(
+            conn,
+            nombre=datos.nombre,
+            lead_time_dias=datos.lead_time_dias,
+            contacto=datos.contacto,
+            telefono=datos.telefono,
+        )
+    finally:
+        conn.close()
+
+
+@app.put("/api/proveedores/{proveedor_id}")
+def api_editar_proveedor(proveedor_id: int, datos: ProveedorEntrada):
+    """
+    Editar un proveedor. `activo: true` lo reactiva tras una baja lógica.
+    """
+    conn = get_db()
+    try:
+        return actualizar_proveedor(
+            conn,
+            proveedor_id=proveedor_id,
+            nombre=datos.nombre,
+            lead_time_dias=datos.lead_time_dias,
+            contacto=datos.contacto,
+            telefono=datos.telefono,
+            activo=datos.activo,
+        )
+    finally:
+        conn.close()
+
+
+@app.delete("/api/proveedores/{proveedor_id}")
+def api_dar_de_baja_proveedor(proveedor_id: int):
+    """
+    Baja lógica de un proveedor (`activo = 0`).
+
+    No se borra la fila ni se limpia la asignación de sus productos: los
+    productos vuelven al lead time global y el proveedor se puede reactivar.
+    """
+    conn = get_db()
+    try:
+        return dar_de_baja_proveedor(conn, proveedor_id)
+    finally:
+        conn.close()
+
+
+@app.put("/api/productos/{producto_id}/proveedor")
+def api_asignar_proveedor(producto_id: int, datos: AsignacionProveedorEntrada):
+    """
+    Asignar o quitar el proveedor de un producto (RF-43).
+
+    Existe aparte de `PUT /api/productos/{id}` para que el selector del
+    catálogo no tenga que reenviar el producto entero (y arriesgarse a perder
+    campos que no envía).
+    """
+    conn = get_db()
+    try:
+        return asignar_proveedor_a_producto(conn, producto_id, datos.proveedor_id)
+    finally:
+        conn.close()
+
 
 @app.get("/api/rotacion")
 def api_rotacion():

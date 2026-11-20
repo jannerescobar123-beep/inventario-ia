@@ -70,7 +70,7 @@ const RecomendacionesCompras = () => {
         <h1 className="page-title">Qué comprar esta semana</h1>
         <p className="page-subtitle">
           Lista calculada con tu stock real, la demanda de los últimos 7 días y el tiempo de entrega
-          del proveedor ({datos?.lead_time_asumido ?? 7} días).
+          de cada proveedor ({datos?.lead_time_asumido ?? 7} días para los productos sin proveedor).
         </p>
       </div>
 

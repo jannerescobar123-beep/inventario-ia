@@ -6,6 +6,7 @@ import Dashboard from "./components/dashboard/Dashboard"
 import WizardImport from "./components/wizard-import/WizardImport"
 import PanelAlertas from "./components/panel-alertas/PanelAlertas"
 import RecomendacionesCompras from "./components/recomendaciones-compras/RecomendacionesCompras"
+import Proveedores from "./components/proveedores/Proveedores"
 import Tendencias from "./components/tendencias/Tendencias"
 import ChatIA from "./components/chat-ia/ChatIA"
 
@@ -15,6 +16,7 @@ const NAVEGACION = [
   { ruta: "/importar", etiqueta: "Importar" },
   { ruta: "/alertas", etiqueta: "Alertas" },
   { ruta: "/compras", etiqueta: "Qué comprar" },
+  { ruta: "/proveedores", etiqueta: "Proveedores" },
   { ruta: "/chat", etiqueta: "Chat IA" },
 ]
 
@@ -219,6 +221,7 @@ function Estructura() {
           <Route path="/importar" element={<WizardImport />} />
           <Route path="/alertas" element={<PanelAlertas />} />
           <Route path="/compras" element={<RecomendacionesCompras />} />
+          <Route path="/proveedores" element={<Proveedores />} />
           <Route path="/chat" element={<ChatIA />} />
         </Routes>
       </main>

@@ -523,8 +523,12 @@ def generar_recomendaciones_compra(conn, stock_minimo: int = None,
         cursor.execute("""
             SELECT p.id, p.nombre, p.nombre_norm, p.stock_actual, p.stock_minimo,
                    p.precio_venta, p.costo,
-                   (p.stock_actual * p.precio_venta) AS valor, p.stock_maximo
+                   (p.stock_actual * p.precio_venta) AS valor, p.stock_maximo,
+                   p.proveedor_id, pr.nombre AS proveedor_nombre,
+                   pr.lead_time_dias AS proveedor_lead_time
             FROM productos p
+            LEFT JOIN proveedores pr
+                   ON pr.id = p.proveedor_id AND pr.activo = 1
             WHERE p.stock_actual <= ?
             ORDER BY p.stock_actual ASC
         """, (stock_minimo,))
@@ -535,8 +539,12 @@ def generar_recomendaciones_compra(conn, stock_minimo: int = None,
         cursor.execute("""
             SELECT p.id, p.nombre, p.nombre_norm, p.stock_actual, p.stock_minimo,
                    p.precio_venta, p.costo,
-                   (p.stock_actual * p.precio_venta) AS valor, p.stock_maximo
+                   (p.stock_actual * p.precio_venta) AS valor, p.stock_maximo,
+                   p.proveedor_id, pr.nombre AS proveedor_nombre,
+                   pr.lead_time_dias AS proveedor_lead_time
             FROM productos p
+            LEFT JOIN proveedores pr
+                   ON pr.id = p.proveedor_id AND pr.activo = 1
             WHERE p.stock_minimo > 0
                OR (p.stock_minimo = 0 AND p.stock_actual = 0)
             ORDER BY p.stock_actual ASC
@@ -552,7 +560,8 @@ def generar_recomendaciones_compra(conn, stock_minimo: int = None,
 
     for fila in filas:
         (prod_id, nombre, nombre_norm, stock_actual, stock_minimo_producto,
-         precio_venta, costo, valor, stock_maximo_producto) = fila
+         precio_venta, costo, valor, stock_maximo_producto,
+         proveedor_id, proveedor_nombre, proveedor_lead_time) = fila
 
         # Objetivo de reposición: el mínimo del producto (o el global si se indicó)
         minimo_objetivo = stock_minimo if stock_minimo is not None else (stock_minimo_producto or 0)
@@ -569,8 +578,13 @@ def generar_recomendaciones_compra(conn, stock_minimo: int = None,
         ult_7d = cursor.fetchone()[0] or 0
         demanda_diaria = ult_7d / 7
 
+        # RF-43: el lead time es el del proveedor asignado. Si el producto no
+        # tiene proveedor, o el proveedor está dado de baja (el JOIN filtra
+        # activo = 1), se aplica el parámetro de siempre: 7 días por defecto.
+        lead_time_producto = proveedor_lead_time or lead_time_dias
+
         # Demanda proyectada durante el lead time del proveedor
-        demanda_lead_time = demanda_diaria * lead_time_dias
+        demanda_lead_time = demanda_diaria * lead_time_producto
 
         # Punto de reorden (RF-25): demanda del lead time + stock de seguridad
         stock_seguridad = int(demanda_lead_time * 0.2)
@@ -608,7 +622,7 @@ def generar_recomendaciones_compra(conn, stock_minimo: int = None,
             dias_hasta_reorden = int((stock_actual - punto_reorden) / demanda_diaria)
         dias_hasta_reorden = min(max(dias_hasta_reorden, 0), 7)
         fecha_sugerida = (hoy + timedelta(days=dias_hasta_reorden)).strftime("%Y-%m-%d")
-        fecha_entrega = (hoy + timedelta(days=dias_hasta_reorden + lead_time_dias)).strftime("%Y-%m-%d")
+        fecha_entrega = (hoy + timedelta(days=dias_hasta_reorden + lead_time_producto)).strftime("%Y-%m-%d")
 
         costo_unitario = round(costo or 0, 2)
         recomendaciones.append({
@@ -631,7 +645,12 @@ def generar_recomendaciones_compra(conn, stock_minimo: int = None,
             # orden de compra sepa cuánto dinero va a comprometer.
             "costo_unitario": costo_unitario,
             "costo_total_estimado": round(costo_unitario * cantidad_sugerida, 2),
-            "lead_time_dias": lead_time_dias
+            # RF-43: proveedor real de la línea y el lead time aplicado.
+            # `lead_time_dias` es el del proveedor cuando lo hay; si no, el
+            # parámetro global de siempre.
+            "proveedor_id": proveedor_id,
+            "proveedor": proveedor_nombre,
+            "lead_time_dias": lead_time_producto
         })
 
     # Ordenar por urgencia y, a igual urgencia, por fecha sugerida

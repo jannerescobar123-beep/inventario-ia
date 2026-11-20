@@ -5,7 +5,13 @@ from pathlib import Path
 
 # Ruta de la base de datos (archivo único, cero configuración como en ADR-001)
 BASE_DIR = Path(__file__).parent.parent  # backend/
-DB_PATH = BASE_DIR / "datos" / "inventario.db"
+
+# `INVENTARIO_DB` permite apuntar a otra base (una copia) sin tocar el archivo
+# del usuario. Sin la variable se usa la ruta de siempre: comportamiento
+# idéntico para quien no la define. Existe porque `init_db()` corre al importar
+# el módulo, así que cualquier prueba que importe `database` aplicaría las
+# migraciones pendientes sobre `inventario.db` real.
+DB_PATH = Path(os.environ.get("INVENTARIO_DB") or BASE_DIR / "datos" / "inventario.db")
 
 
 def normalizar_texto(valor) -> str:
@@ -53,6 +59,25 @@ def init_db():
         )
     """)
     
+    # Tabla: proveedores (RF-43)
+    # Se crea antes de añadir productos.proveedor_id para que la columna pueda
+    # declarar su referencia. El lead time es del proveedor, no del producto:
+    # así corregir el plazo de un proveedor no obliga a tocar su catálogo.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS proveedores (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            nombre TEXT NOT NULL,
+            nombre_norm TEXT UNIQUE,
+            lead_time_dias INTEGER NOT NULL DEFAULT 7
+                CHECK (lead_time_dias BETWEEN 1 AND 365),
+            contacto TEXT,
+            telefono TEXT,
+            activo INTEGER NOT NULL DEFAULT 1,
+            fecha_creacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_proveedores_nombre_norm ON proveedores(nombre_norm)")
+
     # Columna auxiliar: nombre sin tildes y en mayúsculas.
     # SQLite UPPER() no elimina acentos, así que el emparejamiento entre el
     # catálogo y las ventas se hace contra este valor calculado en Python.
@@ -71,7 +96,12 @@ def init_db():
         cursor.execute("ALTER TABLE productos ADD COLUMN dias_alerta_inminente INTEGER")
     if "margen_alerta" not in columnas:
         cursor.execute("ALTER TABLE productos ADD COLUMN margen_alerta REAL")
+    # RF-43: proveedor del producto (NULL = sin proveedor asignado).
+    # Los productos sin proveedor conservan el lead time global de siempre.
+    if "proveedor_id" not in columnas:
+        cursor.execute("ALTER TABLE productos ADD COLUMN proveedor_id INTEGER REFERENCES proveedores(id)")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_productos_nombre_norm ON productos(nombre_norm)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_productos_proveedor_id ON productos(proveedor_id)")
 
     # Tabla: umbrales por categoría (RF-30)
     # Una fila por categoría. NULL en un campo = usa el valor de fábrica.

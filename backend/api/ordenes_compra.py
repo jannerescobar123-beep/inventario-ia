@@ -31,6 +31,7 @@ except ImportError:  # Ejecución directa del módulo (backend/api)
 COLUMNAS_CSV = [
     "num",
     "producto",
+    "proveedor",
     "cantidad",
     "urgencia",
     "fecha_sugerida",
@@ -42,7 +43,7 @@ COLUMNAS_CSV = [
 ]
 
 # De qué campo de la recomendación sale cada columna de la orden.
-# almost todas tienen el mismo nombre; la cantidad es la excepción.
+# casi todas tienen el mismo nombre; la cantidad es la excepción.
 ORIGEN_CAMPO = {
     "cantidad": "cantidad_sugerida",
 }
@@ -50,6 +51,7 @@ ORIGEN_CAMPO = {
 ETIQUETAS_CSV = {
     "num": "Nº",
     "producto": "Producto",
+    "proveedor": "Proveedor",
     "cantidad": "Cantidad",
     "urgencia": "Urgencia",
     "fecha_sugerida": "Fecha sugerida",
@@ -61,20 +63,80 @@ ETIQUETAS_CSV = {
 }
 
 
+def _totales_de(lineas: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Sumar unidades y coste de un conjunto de líneas."""
+    return {
+        "productos": len(lineas),
+        "unidades": sum(int(linea.get("cantidad") or 0) for linea in lineas),
+        "costo_total_estimado": round(
+            sum(float(linea.get("costo_total_estimado") or 0) for linea in lineas), 2
+        ),
+    }
+
+
+def _agrupar_por_proveedor(lineas: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Agrupar las líneas por proveedor real (RF-43).
+
+    El pedido se hace a cada proveedor por separado, así que la orden se
+    presenta agrupada. Las líneas sin proveedor van en un grupo propio al
+    final, con `proveedor: None`, para que se vea lo que hay que asignar o
+    pedir a mano.
+
+    El orden es alfabético por proveedor; el grupo «sin proveedor», al final.
+    """
+    grupos_por_id: Dict[Any, Dict[str, Any]] = {}
+    for linea in lineas:
+        clave = linea.get("proveedor_id")
+        grupo = grupos_por_id.get(clave)
+        if grupo is None:
+            grupo = {
+                "proveedor_id": clave,
+                "proveedor": linea.get("proveedor"),
+                "lead_time_dias": linea.get("lead_time_dias"),
+                "lineas": [],
+            }
+            grupos_por_id[clave] = grupo
+        grupo["lineas"].append(linea)
+
+    grupos = list(grupos_por_id.values())
+    grupos.sort(
+        key=lambda g: (
+            g["proveedor"] is None,
+            (g["proveedor"] or "").casefold(),
+        )
+    )
+    for grupo in grupos:
+        grupo["totales"] = _totales_de(grupo["lineas"])
+    return grupos
+
+
 def generar_orden_compra(conn, lead_time_dias: int = 7) -> Dict[str, Any]:
     """
     Construir la orden de compra a partir de las recomendaciones actuales.
 
-    La cabecera lleva la fecha de emisión, el lead time usado y la fecha de
-    referencia de la demanda; las líneas son las recomendaciones ordenadas por
-    urgencia (ya lo están) y los totales son la suma de unidades y de coste.
+    La cabecera lleva la fecha de emisión, el lead time asumido (el que se
+    aplica a los productos sin proveedor) y la fecha de referencia de la
+    demanda. Las líneas son las recomendaciones ordenadas por urgencia y los
+    totales son la suma de unidades y de coste.
+
+    RF-43: cada línea lleva su proveedor y su lead time reales, y la orden se
+    agrupa por proveedor en `grupos` (con subtotales) para poder enviar un
+    pedido a cada uno. `lineas` se mantiene plano y numerado para no romper a
+    quien ya consumía la orden.
     """
     datos = generar_recomendaciones_compra(conn, lead_time_dias=lead_time_dias)
     recomendaciones: List[Dict[str, Any]] = datos.get("recomendaciones", [])
 
     lineas: List[Dict[str, Any]] = []
     for numero, recomendacion in enumerate(recomendaciones, start=1):
-        linea: Dict[str, Any] = {"num": numero}
+        linea: Dict[str, Any] = {
+            "num": numero,
+            # Se copian para que CSV, HTML y JSON digan lo mismo sin volver a
+            # cruzar con el catálogo.
+            "proveedor_id": recomendacion.get("proveedor_id"),
+            "lead_time_dias": recomendacion.get("lead_time_dias"),
+        }
         for columna in COLUMNAS_CSV:
             if columna == "num":
                 continue
@@ -82,22 +144,14 @@ def generar_orden_compra(conn, lead_time_dias: int = 7) -> Dict[str, Any]:
             linea[columna] = recomendacion.get(origen)
         lineas.append(linea)
 
-    unidades = sum(int(linea.get("cantidad") or 0) for linea in lineas)
-    coste_total = round(
-        sum(float(linea.get("costo_total_estimado") or 0) for linea in lineas), 2
-    )
-
     return {
         "titulo": "Orden de compra",
         "fecha_emision": date.today().isoformat(),
         "lead_time_dias": datos.get("lead_time_asumido", lead_time_dias),
         "fecha_referencia_demanda": datos.get("fecha_referencia_demanda"),
         "lineas": lineas,
-        "totales": {
-            "productos": len(lineas),
-            "unidades": unidades,
-            "costo_total_estimado": coste_total,
-        },
+        "grupos": _agrupar_por_proveedor(lineas),
+        "totales": _totales_de(lineas),
     }
 
 
@@ -157,9 +211,11 @@ def _clase_urgencia(urgencia: str) -> str:
 
 def _fila_html(linea: Dict[str, Any]) -> str:
     """Una línea de la tabla del HTML, con todos los textos escapados."""
+    proveedor = linea.get("proveedor") or "Sin asignar"
     celdas = [
         f"<td class='num'>{html.escape(str(linea.get('num', '')))}</td>",
         f"<td class='producto'>{html.escape(str(linea.get('producto', '')))}</td>",
+        f"<td>{html.escape(str(proveedor))}</td>",
         f"<td class='cantidad'>{html.escape(str(linea.get('cantidad', '')))}</td>",
         f"<td class='urgencia {_clase_urgencia(str(linea.get('urgencia', '')))}'>"
         f"{html.escape(str(linea.get('urgencia', '')))}</td>",
@@ -171,6 +227,54 @@ def _fila_html(linea: Dict[str, Any]) -> str:
         f"<td class='num'>{html.escape(str(linea.get('costo_total_estimado', '')))}</td>",
     ]
     return "      <tr>" + "".join(celdas) + "</tr>"
+
+
+def _tabla_grupo(grupo: Dict[str, Any]) -> str:
+    """
+    Una tabla por proveedor, con su subtotal.
+
+    Cada proveedor recibe un pedido distinto, así que la orden los separa. El
+    encabezado del grupo lleva el lead time real aplicado a sus líneas.
+    """
+    lineas = grupo.get("lineas", [])
+    totales = grupo.get("totales", {})
+    nombre = grupo.get("proveedor")
+    lead_time = grupo.get("lead_time_dias")
+
+    if nombre:
+        titulo = html.escape(str(nombre))
+        detalle = f"lead time {html.escape(str(lead_time))} días"
+    else:
+        titulo = "Sin proveedor asignado"
+        detalle = "lead time por defecto"
+
+    return (
+        "    <section class='grupo'>\n"
+        f"      <h2>{titulo}<span class='lead'>{detalle}</span></h2>\n"
+        "      <table>\n"
+        "        <thead>\n"
+        "          <tr>"
+        "<th class='num'>Nº</th><th>Producto</th><th>Proveedor</th>"
+        "<th class='num'>Cantidad</th>"
+        "<th>Urgencia</th><th>Fecha sugerida</th><th>Fecha entrega estimada</th>"
+        "<th class='num'>Stock actual</th><th class='num'>Punto de reorden</th>"
+        "<th class='num'>Coste unitario</th><th class='num'>Coste total</th>"
+        "</tr>\n"
+        "        </thead>\n"
+        "        <tbody>\n"
+        + "\n".join(_fila_html(linea) for linea in lineas)
+        + "\n        </tbody>\n"
+        "        <tfoot>\n"
+        "          <tr>"
+        f"<td colspan='3'>Subtotal {html.escape(str(totales.get('productos', 0)))} producto(s)</td>"
+        f"<td class='cantidad'>{totales.get('unidades', 0)}</td>"
+        "<td colspan='6'></td>"
+        f"<td class='num'>{totales.get('costo_total_estimado', 0)}</td>"
+        "</tr>\n"
+        "        </tfoot>\n"
+        "      </table>\n"
+        "    </section>\n"
+    )
 
 
 CSS_IMPRESION = """
@@ -203,9 +307,13 @@ CSS_IMPRESION = """
     .u-critico { color: #b42318; font-weight: 700; }
     .u-medio { color: #b54708; font-weight: 700; }
     .u-bajo { color: #475467; }
-    .proveedor { margin-top: 22px; padding-top: 12px; border-top: 1px dashed #b9bec6; }
-    .proveedor span { display: inline-block; min-width: 260px;
-                      border-bottom: 1px solid #555; }
+    .grupo { margin-top: 18px; }
+    .grupo h2 {
+      font-size: 15px; margin: 0 0 6px; display: flex; flex-wrap: wrap;
+      align-items: baseline; gap: 10px;
+    }
+    .grupo h2 .lead { font-size: 11px; font-weight: 400; color: #666;
+                      text-transform: uppercase; letter-spacing: .5px; }
     .firma { display: flex; gap: 40px; margin-top: 34px; }
     .firma div { flex: 1; border-top: 1px solid #555; padding-top: 4px;
                  font-size: 11px; color: #555; text-align: center; }
@@ -224,6 +332,8 @@ CSS_IMPRESION = """
       .acciones { display: none; }
       thead { display: table-header-group; }
       tr { break-inside: avoid; }
+      .grupo { break-inside: avoid; }
+      .grupo + .grupo { break-before: page; }
     }
 """.strip()
 
@@ -241,29 +351,15 @@ def orden_a_html(orden: Dict[str, Any]) -> str:
     lineas = orden.get("lineas", [])
 
     if lineas:
-        cuerpo = (
-            "    <table>\n"
-            "      <thead>\n"
-            "        <tr>"
-            "<th class='num'>Nº</th><th>Producto</th><th class='num'>Cantidad</th>"
-            "<th>Urgencia</th><th>Fecha sugerida</th><th>Fecha entrega estimada</th>"
-            "<th class='num'>Stock actual</th><th class='num'>Punto de reorden</th>"
-            "<th class='num'>Coste unitario</th><th class='num'>Coste total</th>"
-            "</tr>\n"
-            "      </thead>\n"
-            "      <tbody>\n"
-            + "\n".join(_fila_html(linea) for linea in lineas)
-            + "\n      </tbody>\n"
-            "      <tfoot>\n"
-            "        <tr>"
-            f"<td colspan='2'>Total ({totales.get('productos', 0)} productos)</td>"
-            f"<td class='cantidad'>{totales.get('unidades', 0)}</td>"
-            "<td colspan='5'></td>"
-            f"<td class='num'>{totales.get('costo_total_estimado', 0)}</td>"
-            "</tr>\n"
-            "      </tfoot>\n"
-            "    </table>\n"
-        )
+        grupos = orden.get("grupos") or _agrupar_por_proveedor(lineas)
+        cuerpo = "".join(_tabla_grupo(grupo) for grupo in grupos)
+        # Aviso solo si de verdad hay líneas sin proveedor: un pedido a ciegas
+        # acaba en un correo a nadie.
+        if any(not linea.get("proveedor") for linea in lineas):
+            cuerpo += (
+                "    <p class='nota'>Hay líneas sin proveedor asignado: "
+                "asígnalas en el catálogo para agrupar la orden por proveedor.</p>\n"
+            )
     else:
         cuerpo = "    <p class='vacio'>No hay productos que comprar esta semana.</p>\n"
 
@@ -294,11 +390,7 @@ def orden_a_html(orden: Dict[str, Any]) -> str:
       <div><strong>Unidades</strong>{html.escape(str(totales.get('unidades', 0)))}</div>
       <div><strong>Coste estimado</strong>{html.escape(str(totales.get('costo_total_estimado', 0)))}</div>
     </section>
-{cuerpo}    <section class="proveedor">
-      <strong>Proveedor</strong> <span>&nbsp;</span>
-      <div class="nota">Pendiente de RF-43 (tabla de proveedores): esta orden no guarda proveedor.</div>
-    </section>
-    <section class="firma">
+{cuerpo}    <section class="firma">
       <div>Fecha y firma del solicitante</div>
       <div>Recibido por</div>
     </section>

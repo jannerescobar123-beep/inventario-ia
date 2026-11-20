@@ -235,11 +235,11 @@ def test_html_sin_productos_avisa(client, bd_temporal):
     assert "No hay productos que comprar" in html_texto
 
 
-def test_html_deja_linea_para_el_proveedor(client, catalogo_con_demanda):
-    """No hay tabla de proveedores (RF-43): la línea se rellena a mano."""
+def test_html_agrupa_por_proveedor(client, catalogo_con_demanda):
+    """RF-43: sin proveedores asignados, la orden muestra un grupo propio."""
     html_texto = client.get("/api/ordenes-compra.html").text
-    assert "Proveedor" in html_texto
-    assert "RF-43" in html_texto
+    assert "Sin proveedor asignado" in html_texto
+    assert "Hay líneas sin proveedor asignado" in html_texto
 
 
 # --- Coherencia entre las tres salidas ------------------------------------

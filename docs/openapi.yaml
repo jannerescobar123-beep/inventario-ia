@@ -124,6 +124,122 @@ paths:
           description: El SKU pertenece a otro producto
         '422':
           description: Cuerpo inválido (nombre vacío, precio o stock negativos)
+  /api/productos/{producto_id}/proveedor:
+    put:
+      tags: [Productos]
+      summary: Asignar o quitar el proveedor de un producto (RF-43)
+      description: >
+        `proveedor_id: null` deja el producto sin proveedor (vuelve al lead
+        time global de 7 días). Un proveedor inexistente devuelve 404 y uno
+        dado de baja, 409.
+      parameters:
+        - name: producto_id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/AsignacionProveedor' }
+      responses:
+        '200':
+          description: Producto con el proveedor asignado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Producto' }
+        '404':
+          description: Producto o proveedor no encontrado
+        '409':
+          description: El proveedor está dado de baja
+  /api/proveedores:
+    get:
+      tags: [Proveedores]
+      summary: Lista de proveedores (RF-43)
+      parameters:
+        - name: solo_activos
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+      responses:
+        '200':
+          description: Proveedores ordenados por nombre
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: '#/components/schemas/Proveedor' }
+    post:
+      tags: [Proveedores]
+      summary: Alta de un proveedor (RF-43)
+      description: >
+        El nombre es único sin distinguir tildes ni mayúsculas; un duplicado
+        devuelve 409.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProveedorEntrada' }
+      responses:
+        '201':
+          description: Proveedor creado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Proveedor' }
+        '409':
+          description: Ya existe un proveedor con ese nombre
+        '422':
+          description: Cuerpo inválido (nombre vacío o lead time fuera de 1-365 días)
+  /api/proveedores/{proveedor_id}:
+    put:
+      tags: [Proveedores]
+      summary: Edición de un proveedor (RF-43)
+      description: >
+        `activo: true` reactiva un proveedor dado de baja. Si `activo` no se
+        envía, se conserva el estado actual. Los demás campos tienen semántica
+        PUT: `contacto` y `telefono` omitidos se guardan como `null`.
+      parameters:
+        - name: proveedor_id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: '#/components/schemas/ProveedorEntrada' }
+      responses:
+        '200':
+          description: Proveedor actualizado
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Proveedor' }
+        '404':
+          description: Proveedor no encontrado
+        '409':
+          description: El nombre pertenece a otro proveedor
+        '422':
+          description: Cuerpo inválido
+    delete:
+      tags: [Proveedores]
+      summary: Baja lógica de un proveedor (RF-43)
+      description: >
+        Marca `activo = 0`. No borra la fila ni limpia la asignación de sus
+        productos: los productos vuelven al lead time global y el proveedor se
+        puede reactivar con PUT.
+      parameters:
+        - name: proveedor_id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: Proveedor dado de baja
+          content:
+            application/json:
+              schema: { $ref: '#/components/schemas/Proveedor' }
+        '404':
+          description: Proveedor no encontrado
   /api/kpis:
     get:
       tags: [Análisis]
@@ -388,6 +504,9 @@ components:
         stock_maximo: { type: integer, nullable: true, description: 'Máximo de stock; null = sin máximo (RF-42)' }
         dias_alerta_inminente: { type: integer, nullable: true, description: 'Días de cobertura por debajo de los cuales la alerta es inminente; null = hereda de su categoría o de fábrica (RF-30)' }
         margen_alerta: { type: number, nullable: true, description: 'Multiplicador del stock mínimo para alertar; null = hereda de su categoría o de fábrica (RF-30)' }
+        proveedor_id: { type: integer, nullable: true, description: 'Proveedor asignado; null = sin proveedor y lead time global (RF-43)' }
+        proveedor: { type: string, nullable: true, description: 'Nombre del proveedor asignado (RF-43)' }
+        lead_time_proveedor: { type: integer, nullable: true, description: 'Lead time del proveedor asignado en días; null si el producto no tiene proveedor (RF-43)' }
       required: [id, nombre]
     KPIs:
       type: object
@@ -471,6 +590,8 @@ components:
         costo_unitario: { type: number, description: 'Coste de compra por unidad, tomado del catálogo (RF-27)' }
         costo_total_estimado: { type: number, description: 'costo_unitario x cantidad_sugerida (RF-27)' }
         lead_time_dias: { type: integer }
+        proveedor_id: { type: integer, nullable: true, description: 'Proveedor del producto; null = sin proveedor (RF-43)' }
+        proveedor: { type: string, nullable: true, description: 'Nombre del proveedor del producto; null = sin proveedor (RF-43)' }
     OrdenCompra:
       type: object
       description: Orden de compra (RF-27)
@@ -486,6 +607,7 @@ components:
             properties:
               num: { type: integer }
               producto: { type: string }
+              proveedor: { type: string, nullable: true, description: 'Proveedor real de la línea (RF-43); null = sin asignar' }
               cantidad: { type: integer }
               urgencia: { type: string, enum: [crítico, medio, bajo] }
               fecha_sugerida: { type: string, format: date }
@@ -494,6 +616,24 @@ components:
               punto_reorden: { type: integer }
               costo_unitario: { type: number }
               costo_total_estimado: { type: number }
+        grupos:
+          type: array
+          description: 'Líneas agrupadas por proveedor real, con subtotales (RF-43)'
+          items:
+            type: object
+            properties:
+              proveedor_id: { type: integer, nullable: true }
+              proveedor: { type: string, nullable: true, description: 'null = líneas sin proveedor asignado' }
+              lead_time_dias: { type: integer, nullable: true }
+              lineas:
+                type: array
+                items: { type: object }
+              totales:
+                type: object
+                properties:
+                  productos: { type: integer }
+                  unidades: { type: integer }
+                  costo_total_estimado: { type: number }
         totales:
           type: object
           properties:
@@ -693,6 +833,7 @@ components:
         stock_maximo: { type: integer, minimum: 0, nullable: true, default: null, description: 'RF-42. En la edición solo se sobrescribe si se envía' }
         dias_alerta_inminente: { type: integer, minimum: 1, nullable: true, default: null, description: 'RF-30. En la edición solo se sobrescribe si se envía' }
         margen_alerta: { type: number, exclusiveMinimum: 0, nullable: true, default: null, description: 'RF-30. En la edición solo se sobrescribe si se envía' }
+        proveedor_id: { type: integer, minimum: 1, nullable: true, default: null, description: 'RF-43. En la edición solo se sobrescribe si se envía; null quita el proveedor' }
       required: [nombre]
     UmbralCategoriaEntrada:
       type: object
@@ -726,3 +867,31 @@ components:
         dias_inminente: { type: integer }
         margen: { type: number }
         configurada: { type: boolean, description: 'false cuando la categoría vuelve a los valores de fábrica' }
+    Proveedor:
+      type: object
+      description: Proveedor con su tiempo de entrega (RF-43)
+      properties:
+        id: { type: integer }
+        nombre: { type: string }
+        lead_time_dias: { type: integer, minimum: 1, maximum: 365 }
+        contacto: { type: string, nullable: true }
+        telefono: { type: string, nullable: true }
+        activo: { type: boolean, description: 'false tras una baja lógica; sus productos vuelven al lead time global' }
+        fecha_creacion: { type: string, format: date-time }
+        productos_asignados: { type: integer, description: 'Productos del catálogo con este proveedor' }
+      required: [id, nombre, lead_time_dias, activo]
+    ProveedorEntrada:
+      type: object
+      description: Cuerpo de alta o edición de un proveedor (RF-43)
+      properties:
+        nombre: { type: string, minLength: 1, maxLength: 200 }
+        lead_time_dias: { type: integer, minimum: 1, maximum: 365, default: 7 }
+        contacto: { type: string, nullable: true }
+        telefono: { type: string, nullable: true }
+        activo: { type: boolean, nullable: true, description: 'Solo en PUT: true reactiva un proveedor dado de baja; si no se envía, no cambia' }
+      required: [nombre]
+    AsignacionProveedor:
+      type: object
+      description: Asignación de proveedor a un producto (RF-43); null = sin proveedor
+      properties:
+        proveedor_id: { type: integer, minimum: 1, nullable: true, default: null }

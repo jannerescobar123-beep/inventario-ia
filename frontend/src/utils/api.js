@@ -24,6 +24,35 @@ export const api = {
   rotacion: () => pedir("/api/rotacion"),
   recomendaciones: () => pedir("/api/recomendaciones"),
 
+  // RF-43: proveedores con su tiempo de entrega (lead time).
+  proveedores: (soloActivos = false) =>
+    pedir(`/api/proveedores${soloActivos ? "?solo_activos=true" : ""}`),
+
+  crearProveedor: (datos) =>
+    pedir("/api/proveedores", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(datos),
+    }),
+
+  editarProveedor: (id, datos) =>
+    pedir(`/api/proveedores/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(datos),
+    }),
+
+  // Baja lógica: el proveedor deja de usarse pero se puede reactivar.
+  bajaProveedor: (id) => pedir(`/api/proveedores/${id}`, { method: "DELETE" }),
+
+  // Asignación por producto, sin reenviar el producto entero.
+  asignarProveedor: (productoId, proveedorId) =>
+    pedir(`/api/productos/${productoId}/proveedor`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ proveedor_id: proveedorId }),
+    }),
+
   // RF-10: serie de ventas por día, semana o mes.
   tendencias: (granularidad = "semana") =>
     pedir(`/api/tendencias?granularidad=${encodeURIComponent(granularidad)}`),
